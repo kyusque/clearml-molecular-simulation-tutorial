@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -69,6 +70,26 @@ def resolve_clearml_config_file(config_file_arg: Path | None) -> Path:
     return repo_local
 
 
+def find_gamess_dir() -> Path | None:
+    for env_name in ("CLEARML_GAMESS_DIR", "GAMESS_DIR"):
+        env_value = os.environ.get(env_name)
+        if env_value:
+            gamess_dir = Path(env_value).expanduser().resolve()
+            rungms_name = "rungms.bat" if os.name == "nt" else "rungms"
+            if (gamess_dir / rungms_name).exists():
+                return gamess_dir
+
+    if os.name == "nt":
+        windows_default = Path("C:/Users/Public/gamess-64")
+        if (windows_default / "rungms.bat").exists():
+            return windows_default
+
+    rungms_path = shutil.which("rungms.bat" if os.name == "nt" else "rungms")
+    if rungms_path:
+        return Path(rungms_path).resolve().parent
+    return None
+
+
 def main() -> int:
     args = parse_args()
     config_file = resolve_clearml_config_file(args.config_file)
@@ -84,6 +105,10 @@ def main() -> int:
 
     env = os.environ.copy()
     env["CLEARML_CONFIG_FILE"] = str(config_file)
+    gamess_dir = find_gamess_dir()
+    if gamess_dir:
+        env["CLEARML_GAMESS_DIR"] = str(gamess_dir)
+        env.setdefault("GAMESS_DIR", str(gamess_dir))
 
     command = ["clearml-agent", "daemon", "--queue", *args.queue]
     if args.foreground:
@@ -96,6 +121,10 @@ def main() -> int:
         command.append("--status")
 
     print(f"CLEARML_CONFIG_FILE={config_file.as_posix()}", flush=True)
+    if gamess_dir:
+        print(f"CLEARML_GAMESS_DIR={gamess_dir.as_posix()}", flush=True)
+    else:
+        print("CLEARML_GAMESS_DIR was not set because rungms was not found.", flush=True)
     print(" ".join(command), flush=True)
 
     return subprocess.call(command, env=env, cwd=REPO_ROOT)
