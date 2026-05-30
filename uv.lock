@@ -178,14 +178,14 @@ source = { editable = "." }
 dependencies = [
     { name = "clearml" },
     { name = "clearml-agent" },
-    { name = "impi-devel" },
+    { name = "impi-devel", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "clearml", specifier = ">=2.1.7" },
     { name = "clearml-agent", specifier = ">=3.0.2" },
-    { name = "impi-devel", specifier = ">=2021.18.0" },
+    { name = "impi-devel", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')", specifier = ">=2021.18.0" },
 ]
 
 [[package]]
