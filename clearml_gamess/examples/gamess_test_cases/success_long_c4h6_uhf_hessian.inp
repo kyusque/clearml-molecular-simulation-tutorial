@@ -1,0 +1,12 @@
+ $contrl scftyp=uhf mult=3 runtyp=hessian $end
+ $system mwords=5 $end
+ $basis  gbasis=n311 ngauss=6 diffsp=.true. ndfunc=1 $end
+ $scf    dirscf=.true. $end
+ $data
+triplet state of C(CH2)3...UHF/6-311+G(d) geometry...pos.definite
+Dnh 3
+
+C           6.0   0.0000000000   0.0000000000   0.0000000000
+C           6.0   1.4164722202   0.0000000000   0.0000000000
+H           1.0   1.9736799823   0.9191305394   0.0000000000
+ $end

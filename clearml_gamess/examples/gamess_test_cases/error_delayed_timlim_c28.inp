@@ -1,0 +1,11 @@
+ $contrl scftyp=rhf runtyp=gradient icharg=-2 ispher=1 molplt=.true. $end
+ $system timlim=0.05 mwords=5 $end
+ $basis  gbasis=n311 ngauss=6 ndfunc=1 $end
+ $data
+tetrahedral C28 cluster with deliberately short TIMLIM
+Td
+
+C   6.0   1.3904149550   1.3904149550   1.3904149550
+C   6.0   0.5340926866  -0.5340926866   2.3054442062
+C   6.0   0.0209795328   1.6874271866   1.6874271866
+ $end

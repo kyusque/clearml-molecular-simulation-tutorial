@@ -1,0 +1,27 @@
+# Example ClearML configuration for local development.
+#
+# Copy this file to local/clearml.conf and fill in your own values.
+#
+# Where to get a real clearml.conf:
+# - ClearML Cloud: https://app.clear.ml/settings/workspace-configuration
+# - Self-hosted ClearML: open your ClearML web app and go to
+#   Settings > Workspace Configuration
+#
+# You can usually copy the generated configuration block from that page.
+
+api {
+  api_server: "https://api.clear.ml"
+  web_server: "https://app.clear.ml"
+  files_server: "https://files.clear.ml"
+
+  credentials {
+    "default" {
+      key: "YOUR_ACCESS_KEY"
+      secret: "YOUR_SECRET_KEY"
+    }
+  }
+}
+
+sdk {
+  default_output_uri: ""
+}
