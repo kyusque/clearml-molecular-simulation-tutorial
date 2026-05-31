@@ -2,102 +2,41 @@
 
 [日本語版](README-ja.md)
 
-This repository is a tutorial for managing molecular simulation jobs with ClearML.
+Running GAMESS calculations tends to create these familiar problems:
 
-The current example uses GAMESS, but the pattern is intended to apply to other molecular simulation programs as well: pass input files as ClearML artifacts, run the program on a ClearML Agent, and track the log from a separate ClearML Task.
+- You cannot tell at a glance when a running job will finish
+- Log files and input files from past calculations are scattered and hard to find later
+- Comparing results across multiple runs requires manual bookkeeping
+- You want an LLM agent to handle the full calculation cycle — job submission, I/O management, and dataset management — but no existing tool has all of those APIs in one place
 
-## Scope
-
-This is tutorial material, but the code is intended to be usable as a small starting point.
-
-- Reusable code for each molecular simulation program lives in directories such as `clearml_gamess/`.
-- Concrete ClearML task submission scripts live beside their input files as `<input-file-name-without-ext>.cml.py`.
-- Local operational helpers, such as ClearML Agent startup, live in `tools/`.
-- Agent-facing design notes live in `skills/`.
-
-## Layout
-
-```text
-clearml_gamess/
-  README.md
-  README-ja.md
-  cml_pipeline_gamess.py
-  cml_task_run_gamess.py
-  cml_task_track_gamess.py
-  run_gamess.py
-  track_gamess.py
-  examples/
-
-tools/
-  start_clearml_agent.py
-
-skills/
-  clearml/
-    task-design/
-      SKILL.md
-    artifacts/
-      SKILL.md
-    logging/
-      SKILL.md
-    development-workflow/
-      SKILL.md
-    inspect/
-      SKILL.md
-
-local/
-  clearml.conf.example
-```
-
-## Terms
-
-| Term | Meaning | Use in this tutorial |
-| --- | --- | --- |
-| ClearML Server | Provides the Web UI and backend, and lets ClearML manage records for Tasks, workflows, and artifact metadata. Artifact files can live on the ClearML Server or on configured external object storage / shared filesystems. | Used as the place to inspect Tasks, Pipelines, logs, and artifacts later. |
-| Task | A ClearML-managed execution unit. Code, parameters, logs, metrics, and artifacts are associated with Tasks. | The GAMESS launch Task and the GAMESS log tracking Task are separate Tasks. |
-| Queue | A place where Tasks wait before execution. | Tasks created by a `.cml.py` Pipeline script are enqueued, then pulled by an Agent. |
-| ClearML Agent | A process that monitors queues, pulls Tasks, fetches the recorded repository/code, prepares the execution environment, and runs the specified code. | Runs on the Agent PC and executes GAMESS from the Task it receives from a queue. |
-| Pipeline | A workflow that connects multiple Tasks. | Connects the Task that launches GAMESS and the Task that tracks the log. |
-| ClearML task / Pipeline submission PC | Not a separate ClearML server component. It means the machine where you run `.cml.py` to create a Pipeline and enqueue Tasks. | The PC where you run the `.cml.py` file placed beside an input file. It can be the same as, or separate from, the Agent PC. |
-| Agent PC | The machine running ClearML Agent. | The PC where GAMESS is installed and where `tools/start_clearml_agent.py` is run with that machine's `local/clearml.conf`. |
-
-For a small local test, the ClearML Server, submission PC, and Agent PC can all be the same machine.
+This tutorial shows how to use **ClearML** to solve these problems. ClearML brings job submission, input/output management, and dataset management APIs together in one platform, so the same interface works whether a human is running calculations manually or an LLM agent is automating the workflow. When you submit a calculation, the input file, log, and extracted values such as energy are recorded automatically and accessible from a web browser or API at any time.
 
 ## Quick Start
 
-### Initial Setup
+### What you need
 
-#### ClearML Server
+- **A ClearML account** — free at [app.clear.ml](https://app.clear.ml/) ([self-hosting](https://github.com/clearml/clearml-server) is also supported)
+- **A Windows PC with GAMESS installed** — see [clearml_gamess/README.md](clearml_gamess/README.md) for GAMESS setup
+- **uv** — a Python package manager (installed in step 4)
 
-Prepare a ClearML server so the ClearML SDK and Agent can register and retrieve Tasks, logs, and artifact metadata.
+### Steps
 
-The easiest starting point is the official [ClearML hosted server](https://app.clear.ml/).
+#### 1. Get ClearML API credentials
 
-- Create a workspace.
-- Generate API credentials.
-- Put the API credentials in `local/clearml.conf` later.
+Sign up at [app.clear.ml](https://app.clear.ml/) and generate credentials from **Settings → Workspace → Create new credentials**.
 
-The hosted server is convenient for tutorials and small validation runs. In company-internal use, molecular simulation workflows can produce many input, log, scratch/restart, and auxiliary output files, so consider a self-hosted ClearML server and/or external object storage for proprietary data or large calculation logs. This repository does not yet document that setup, but a future version may add server configuration examples.
-
-#### Repository
-
-`git clone` this repository on both the ClearML task submission PC and the Agent PC. If both roles run on the same machine, one clone is enough. The Agent PC needs a clone so it can run `tools/start_clearml_agent.py` with that machine's `local/clearml.conf`.
+#### 2. Clone this repository
 
 ```bash
 git clone https://github.com/kyusque/clearml-molecular-simulation-tutorial.git
 cd clearml-molecular-simulation-tutorial
 ```
 
-#### ClearML Credentials
+#### 3. Configure credentials
 
-Create `local/clearml.conf` from `local/clearml.conf.example` and put the generated API credentials there. If the submission PC and Agent PC are separate machines, place the config in `local/clearml.conf` under each clone.
+Copy `local/clearml.conf.example` to `local/clearml.conf` and fill in the API credentials from step 1.
 
-`local/` is for machine-specific configuration and temporary local logs. If submit logs are useful, put them under `local/logs/`, not next to `clearml.conf`.
-
-#### uv
-
-Install `uv` on both the submission PC and the Agent PC.
-
-If `uv` is not available, install it as follows. The Agent startup helper and ClearML task submission `.cml.py` files include PEP 723 inline script metadata, so `uv sync` is not required for the quick-start path.
+#### 4. Install uv
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -109,55 +48,73 @@ On macOS/Linux:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-#### GAMESS
+#### 5. Start a ClearML Agent
 
-Install GAMESS on the Agent PC. See [clearml_gamess/README.md](clearml_gamess/README.md) for GAMESS layout and `rungms` handling.
-
-### Run
-
-Start a ClearML Agent on the Agent PC:
+ClearML Agent is the process that receives calculation jobs from ClearML and runs GAMESS.
 
 ```powershell
 uv run tools/start_clearml_agent.py --queue default --create-queue --cpu-only
 ```
 
-Create the GAMESS sample Pipeline and enqueue its Tasks from the ClearML task submission PC:
+#### 6. Submit the sample calculation
+
+In another terminal:
 
 ```powershell
 uv run clearml_gamess/examples/water_rhf_sto3g_opt.cml.py
 ```
 
-## Users and Developers
+Open [app.clear.ml](https://app.clear.ml/) — the calculation appears as a Task and the Agent starts running it. After completion, the log and energy metrics are visible from the web UI.
 
-If you only want to adjust an input file and run another calculation, Git should stay mostly in the background. Edit the `.inp` and `.cml.py`, create a new Pipeline, and the ClearML task submission script will store the input as the `pipeline_input` artifact.
+## How it works
 
-Git becomes important when you are changing task execution code that runs on the Agent: artifact registration, log previews, scratch collection, metrics extraction, and similar behavior. For that workflow, a commit is not required for every iteration. The important part is that the intended code change appears in the Task source diff. Stage new files with `git add` before submitting.
+Three components work together:
+
+| Component | Role |
+| --- | --- |
+| **This PC (submission side)** | Runs `.cml.py` scripts that register a GAMESS calculation in ClearML and push it to a queue |
+| **ClearML Agent** | Watches the queue, pulls calculation Tasks, and runs GAMESS |
+| **ClearML Server (app.clear.ml)** | Manages Tasks, logs, and artifacts; provides the web UI |
+
+The flow from submission to completion:
+
+1. Run `.cml.py` → the input file is stored as an artifact and the Task is queued
+2. Agent picks up the Task → runs GAMESS and streams the log in real time
+3. Calculation finishes → log, extracted values such as energy, and optionally scratch/temp files are stored as artifacts
+4. If GAMESS terminates abnormally → the Task is marked failed and visible in the web UI
+
+For a small setup, all three roles can run on the same machine. To offload computation to a dedicated machine, start the Agent there instead. ClearML Server can also be self-hosted instead of using the app.clear.ml SaaS.
+
+## Running your own calculation
+
+The convention in this repository is to place a `.cml.py` submission script beside each input file:
+
+```
+clearml_gamess/examples/
+  water_rhf_sto3g_opt.inp        ← GAMESS input file
+  water_rhf_sto3g_opt.cml.py     ← ClearML submission script
+```
+
+To submit your own calculation:
+
+1. Prepare a GAMESS input file (`.inp`).
+2. Copy an existing `.cml.py` and edit the project name and input file path.
+3. Run `uv run your_calculation.cml.py`.
+
+Changing input files and resubmitting does not require Git. If you want to change log analysis or metrics extraction code, the diff must reach the Agent — stage new files with `git add` before submitting.
+
+## Test cases
+
+`clearml_gamess/examples/gamess_test_cases/` contains inputs for testing different outcomes:
+
+| File | Description |
+| --- | --- |
+| `success_fast_water` | Small water molecule (completes quickly) |
+| `success_long_c4h6_uhf_hessian` | C4H6 UHF Hessian (takes longer) |
+| `error_fast_bad_scf` | SCF convergence failure (for testing failed Tasks) |
+| `error_delayed_timlim_c28` | Time-limit termination (for testing TIMLIM errors) |
 
 ## Details
 
-GAMESS-specific usage and design notes are documented here:
-
-- [clearml_gamess/README.md](clearml_gamess/README.md)
-- [clearml_gamess/README-ja.md](clearml_gamess/README-ja.md)
-
-Agent-facing design notes are here:
-
-- [skills/clearml/task-design/SKILL.md](skills/clearml/task-design/SKILL.md)
-- [skills/clearml/artifacts/SKILL.md](skills/clearml/artifacts/SKILL.md)
-- [skills/clearml/logging/SKILL.md](skills/clearml/logging/SKILL.md)
-- [skills/clearml/development-workflow/SKILL.md](skills/clearml/development-workflow/SKILL.md)
-- [skills/clearml/inspect/SKILL.md](skills/clearml/inspect/SKILL.md)
-
-## Basic Pattern
-
-For each molecular simulation program, the workflow is:
-
-1. Register the input file as a ClearML artifact.
-2. Run the molecular simulation program on a ClearML Agent.
-3. Write a run manifest JSON for downstream handoff.
-4. Read the run manifest JSON from a separate ClearML Task and classify completion from the log.
-5. Register generated files such as logs and scratch/temp outputs as artifacts.
-6. Extract useful values, such as energy, during the tracking step and save them as `tracking_metrics`.
-7. If the molecular simulation program terminated abnormally, keep the artifacts and fail the ClearML task created from the tracking entry point.
-
-In this repository, that flow is represented as the `run_gamess` and `track_gamess` steps of a ClearML Pipeline.
+- GAMESS-specific setup (install location, `rungms` configuration): [clearml_gamess/README.md](clearml_gamess/README.md)
+- Agent, Pipeline, and artifact design notes: [skills/clearml/](skills/clearml/)

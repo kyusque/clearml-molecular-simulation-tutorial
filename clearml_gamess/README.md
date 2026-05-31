@@ -2,59 +2,108 @@
 
 [日本語版](README-ja.md)
 
-`clearml_gamess/` contains reusable code for running and tracking GAMESS calculations with ClearML Task / Pipeline.
+`clearml_gamess/` contains reusable code for running and tracking GAMESS calculations with ClearML Tasks and Pipelines.
 
-- `run_gamess.py`: submits a GAMESS job and writes a run manifest JSON
-- `track_gamess.py`: follows and classifies the GAMESS log, and writes extracted values to `tracking_metrics`
-- `cml_task_run_gamess.py`: Task definition used by the pipeline `run_gamess` step (executed on ClearML Agent)
-- `cml_task_track_gamess.py`: Task definition used by the pipeline `track_gamess` step (executed on ClearML Agent)
-- `cml_pipeline_gamess.py`: ClearML Pipeline definition with `run_gamess` and `track_gamess` steps
-- `examples/`: `.inp` files and matching `<input-file-name-without-ext>.cml.py` ClearML task submission examples
-
-`CLEARML_CONFIG_FILE` must be set before calling `build_pipeline()`. If it is missing, pipeline construction fails immediately.
-
-## Code Used by the Agent
-
-By default, `cml_pipeline_gamess.py` uses this repository's local path as the ClearML Task `repository`. This is the most direct mode when the PipelineController and ClearML Agent run on the same machine during development.
-
-The submit side resolves `repository`, `branch`, `commit`, and the uncommitted diff before creating ClearML Tasks. `repository` is the location the Agent clones from, not a commit name such as `HEAD`. The `.cml.py` files in `examples/` default to `SOURCE_REPOSITORY="origin"`, which means `git remote origin`; the commit is resolved separately with `git rev-parse HEAD`. Override the clone source with `CLEARML_TASK_REPOSITORY` when needed. The branch can be selected with `CLEARML_TASK_BRANCH`. To pin a specific commit, use `CLEARML_TASK_COMMIT`.
-
-If a Task is created on Windows and executed by a macOS Agent, the Windows path `C:/Users/...` is not visible from macOS. In that case, explicitly pass the local repository path on the macOS machine, a shared filesystem path, or a Git remote. `cml_pipeline_gamess.py` passes `git diff --binary HEAD` for the Python code needed at runtime, so the Agent can apply uncommitted changes as long as it can clone the base commit. Stage new files with `git add` before submitting.
-
-Git matters most for people editing Python code that runs on the Agent: artifact registration, text previews, scratch collection, metrics extraction, and the JSON handoff between run and track tasks. A commit is not required for every iteration. If the Agent can clone the base commit and the intended change is included in the ClearML Task source diff, the Agent can apply that local diff remotely. New files may need `git add` before they appear in the diff.
-
-For users who only want to adjust a GAMESS input and submit another calculation, Git should not be the main workflow. Edit the `.inp` and `.cml.py`, create a new Pipeline, and let the ClearML task submission script upload the input as the `pipeline_input` artifact. ClearML's best-practice idea of keeping uncommitted changes for later forensics is useful here mainly for task execution code and callbacks, not as a requirement for ordinary input-file edits.
+| File | Role |
+| --- | --- |
+| `run_gamess.py` | Submits a GAMESS job and writes a run manifest JSON |
+| `track_gamess.py` | Follows and classifies the GAMESS log; writes extracted values to `tracking_metrics` |
+| `cml_task_run_gamess.py` | Task definition for the pipeline `run_gamess` step (runs on Agent) |
+| `cml_task_track_gamess.py` | Task definition for the pipeline `track_gamess` step (runs on Agent) |
+| `cml_pipeline_gamess.py` | Pipeline definition with `run_gamess` and `track_gamess` steps |
+| `examples/` | `.inp` files and matching `.cml.py` submission examples |
 
 ## GAMESS Installation
 
-This repository does not include GAMESS itself. Install GAMESS on the machine where the ClearML Agent runs.
+GAMESS is not included in this repository. Install it on the machine where the ClearML Agent runs.
 
-This tutorial mainly assumes the Windows GAMESS distribution. On Windows, the default layout is `C:/Users/Public/gamess-64` containing `rungms.bat` and `gamess.<version>.exe`.
+**Windows (recommended layout)**
 
-On macOS/Linux, build GAMESS from source and make sure `rungms` is usable. This code does not document the GAMESS build itself. On the Agent side, it tracks the `rungms` path and treats its parent directory as the GAMESS directory.
+Extract GAMESS to `C:/Users/Public/gamess-64` so that `rungms.bat` and `gamess.<version>.exe` are inside. `cml_task_run_gamess.py` uses this path by default.
 
-When `GAMESS_DIR` is not set, `cml_task_run_gamess.py` resolves the GAMESS location. On Windows, it uses `C:/Users/Public/gamess-64`. On macOS/Linux, it looks for `rungms` on `PATH` and treats its parent directory as the GAMESS directory.
+If you install elsewhere, set `CLEARML_GAMESS_DIR` in the Agent environment. When starting the Agent with `tools/start_clearml_agent.py`, the helper searches for `rungms.bat` automatically.
 
-If `rungms` is not on `PATH` on macOS/Linux, set `CLEARML_GAMESS_DIR` or `GAMESS_DIR` in the environment used to start the Agent. `cml_task_run_gamess.py` checks these environment variables first and verifies that `rungms` exists under the configured directory.
+**macOS/Linux**
 
-When the Agent is started with this repository's `tools/start_clearml_agent.py`, the helper looks for `rungms` at startup and passes the detected directory to the Agent process as `CLEARML_GAMESS_DIR`. If `CLEARML_GAMESS_VERSION` is not set, it also infers a version from `gamess.*.x` or `gamess.*.exe` in the GAMESS directory.
+Build GAMESS from source and make `rungms` available. When starting the Agent with `tools/start_clearml_agent.py`, if `rungms` is on `PATH` it is detected at startup and passed to the Agent as `CLEARML_GAMESS_DIR`. If it is not on `PATH`, set `CLEARML_GAMESS_DIR` manually.
 
-On macOS/Linux, `rungms` usually receives an input name without the `.inp` extension and reads that input from the current working directory. This code therefore does not copy inputs into the GAMESS installation directory. It copies the input file into the agent-side per-run temporary workspace, runs `rungms <stem>` from that workspace, and passes the GAMESS installation directory through `GMSPATH` and `GAMESS_DIR` for helper-file lookup.
+## What .cml.py Does
 
-Some `rungms` scripts use GNU-style `readlink -f`. macOS' built-in `readlink` does not support `-f`, so this code creates a small compatibility shim in the per-run workspace and prepends it to `PATH` before launching `rungms`. If the Agent environment already has `GMSPATH`, the task-side GAMESS directory resolution takes precedence.
+A `.cml.py` file is the user-edited submission script. It contains only execution conditions: project name, queue, GAMESS input file, and CPU count.
 
-If the `rungms` script has a hard-coded `GMSPATH`, this code does not edit the GAMESS installation in place. It copies `rungms` into the per-run workspace and patches only that temporary copy to point at the task-resolved GAMESS directory.
+Generated output paths — logs, run manifest, metrics — are not written by users. The Agent-side Tasks (`cml_task_run_gamess.py` and `cml_task_track_gamess.py`) create a per-run temporary workspace and manage those paths themselves.
 
-On Windows, the code expects at least these files under that directory:
+## Generated Artifacts
 
-- `rungms.bat`
-- `gamess.<version>.exe`
+| Artifact | What it is |
+| --- | --- |
+| `gamess_input` | The exact input file passed to GAMESS on the Agent |
+| `gamess_run_manifest` | Handoff JSON for the track task (log path, execution environment) |
+| `gamess_rungms` | The exact `rungms` or `rungms.bat` that was launched |
+| `gamess_log` | GAMESS output log with text preview |
+| `tracking_metrics` | Classification result (`gamess_status`, `return_code`, etc.) |
+| `gamess_temp` | Scratch/restart files (when enabled) |
 
-The default Windows configuration uses `version="2023.R1.intel"` and looks for `C:/Users/Public/gamess-64/gamess.2023.R1.intel.exe`. On macOS/Linux, if no version is specified, the wrapper infers one from `gamess.*.x` in the GAMESS directory. To use another version, set `CLEARML_GAMESS_VERSION` or `GAMESS_VERSION` in the Agent environment.
+These are also aggregated on the Pipeline Task with `run_gamess_` and `track_gamess_` prefixes.
 
-The Python environment includes `impi-devel` on Windows and Linux x86_64. In this code, Intel MPI runtime libraries required by GAMESS are expected to come from the Python environment through `impi-devel` / `impi-rt`. `run_gamess.py` adds the virtual environment's `Library/bin` directory to `PATH` before launching GAMESS so the MPI DLLs are visible.
+## Completion Detection
 
-If you copy the GAMESS installation directory elsewhere and run from that copy, the required Intel MPI runtime still has to be visible on `PATH`. Windows/Linux x86_64 can use `impi-devel`, but macOS arm64 cannot install `impi-devel` from pip, so the ClearML Task requirements exclude it with platform markers. `impi-devel` does not replace the GAMESS installation, but in this Windows tutorial it is treated as a runtime dependency for launching GAMESS.
+The log is scanned for these markers:
+
+- `EXECUTION OF GAMESS TERMINATED NORMALLY` → `gamess_status: completed`
+- `EXECUTION OF GAMESS TERMINATED -ABNORMALLY-` → `gamess_status: failed`
+
+If neither appears, the status is `running` or `unknown`. When GAMESS fails, artifacts are saved before the tracking Task is marked failed.
+
+## Task Naming
+
+ClearML UI truncates long names, so the input file stem comes first:
+
+```
+water_rhf_sto3g_opt.cml_pipeline_gamess
+water_rhf_sto3g_opt.cml_task_run_gamess
+water_rhf_sto3g_opt.cml_task_track_gamess
+```
+
+Task type is set to `data_processing`, not `training`. GAMESS execution is external-program data processing, not ML training.
+
+## Updating Agent Code
+
+When changing Python code that runs on the Agent (such as `cml_task_run_gamess.py` or `cml_task_track_gamess.py`), the diff must reach the Agent.
+
+`cml_pipeline_gamess.py` resolves `repository`, `branch`, `commit`, and the uncommitted diff (`git diff --binary HEAD`) before creating Tasks. The Agent clones that commit and applies the Task diff on top. Commits are not required on every iteration, but new files must be staged with `git add` before submitting or they may not appear in the diff.
+
+The `.cml.py` files in `examples/` default to `SOURCE_REPOSITORY="origin"` (the `git remote origin` URL). Override with `CLEARML_TASK_REPOSITORY` to use a different source. Use `CLEARML_TASK_BRANCH` for branch selection and `CLEARML_TASK_COMMIT` to pin a specific commit.
+
+If Tasks are created on Windows and executed by a macOS Agent, the Windows local path is not visible from macOS. In that case, pass a Git remote URL, a shared filesystem path, or the macOS local path via `CLEARML_TASK_REPOSITORY`.
+
+## GAMESS Version and Intel MPI
+
+**Version detection**
+
+When starting the Agent with `tools/start_clearml_agent.py`, the helper infers the GAMESS version from `gamess.*.x` or `gamess.*.exe` in the GAMESS directory and passes it to the Agent as `CLEARML_GAMESS_VERSION`. Set `CLEARML_GAMESS_VERSION` or `GAMESS_VERSION` explicitly to use a different version.
+
+The default Windows version is `"2023.R1.intel"`, which looks for `C:/Users/Public/gamess-64/gamess.2023.R1.intel.exe`.
+
+**Intel MPI (Windows and Linux x86_64)**
+
+The Python environment in this repository includes `impi-devel` for Windows and Linux x86_64 to supply the Intel MPI runtime libraries required by GAMESS. `run_gamess.py` prepends the virtual environment's `Library/bin` to `PATH` before launching GAMESS so the MPI DLLs are visible.
+
+macOS arm64 cannot install `impi-devel` from pip, so it is excluded from requirements via platform markers. On macOS, provide Intel MPI through another means.
+
+## Implementation Notes (macOS/Linux)
+
+**readlink -f compatibility**
+
+Some `rungms` scripts use GNU-style `readlink -f`. macOS's built-in `readlink` does not support `-f`, so this code creates a small compatibility shim in the per-run workspace and prepends it to `PATH` before launching `rungms`.
+
+**Hard-coded GMSPATH in rungms**
+
+If the `rungms` script contains a hard-coded `GMSPATH`, this code does not edit the GAMESS installation in place. It copies `rungms` into the per-run workspace and patches only that temporary copy to point at the task-resolved GAMESS directory.
+
+**Working directory**
+
+macOS/Linux `rungms` scripts typically receive an input name without extension and read the input from the current working directory. This code copies the input file into the per-run temporary workspace, sets that workspace as the working directory, and runs `rungms <stem>` from there.
 
 ## Design
 
@@ -72,7 +121,7 @@ If you copy the GAMESS installation directory elsewhere and run from that copy, 
 
 Even when an external repository uses this Task wrapper, the run/track Task source code cloned by ClearML is the repository configured on those Tasks. Input files from the external repository are not cloned automatically; they are treated as `pipeline_input` artifacts.
 
-In submit-only mode, `gamess_run_manifest` is not the final result of GAMESS. It is the handoff contract that lets `cml_task_track_gamess.py` start tracking. It contains values such as:
+`gamess_run_manifest` is not the final result of GAMESS. It is the handoff contract that lets `cml_task_track_gamess.py` start tracking. Fields include:
 
 - `schema`: manifest format
 - `mode`: `submit_only`
@@ -91,7 +140,7 @@ At this point the GAMESS calculation is not finished, so the manifest does not c
 - downloads `gamess_run_manifest` from the Task created from `cml_task_run_gamess.py`
 - prints the full log on first read, then tails appended log content
 - resolves the GAMESS log from the manifest
-- in submit-only mode, fail immediately if the live log path is not visible/readable from tracking (no artifact-copy fallback)
+- in submit-only mode, fails immediately if the live log path is not visible/readable from tracking (no artifact-copy fallback)
 - reads the GAMESS termination message and classifies the calculation status
 - writes the result to `tracking_metrics` and registers it as an artifact
 - registers `gamess_log` as a text-preview artifact
@@ -99,41 +148,6 @@ At this point the GAMESS calculation is not finished, so the manifest does not c
 - runs optional callbacks, such as energy extraction, inside the tracking loop
 - fails its ClearML Task after saving artifacts when GAMESS failed
 
-Monitored artifacts aggregated on the Pipeline Task are namespaced per task (for example `pipeline_input`, `pipeline_input_patch`, `run_gamess_input`, `run_gamess_manifest`, `run_gamess_rungms`, `track_gamess_metrics`, `track_gamess_log`, `track_gamess_temp`).
-
-Termination markers:
-
-- `EXECUTION OF GAMESS TERMINATED NORMALLY`: normal completion
-- `EXECUTION OF GAMESS TERMINATED -ABNORMALLY-`: abnormal completion
-
 `tracking_metrics` contains only tracking results, mainly `return_code` and `gamess_status`. `gamess_status` is one of `completed`, `failed`, `running`, `missing_log`, or `unknown`. Provenance information such as input paths, log paths, and the GAMESS version belongs in `gamess_run_manifest`.
 
-## Naming
-
-ClearML UI truncates long Task names, so put the input file name without extension first:
-
-- `<input-file-name-without-ext>.cml_pipeline_gamess`
-- `<input-file-name-without-ext>.cml_task_run_gamess`
-- `<input-file-name-without-ext>.cml_task_track_gamess`
-
-Example:
-
-```text
-success_fast_water.cml_task_run_gamess
-success_fast_water.cml_task_track_gamess
-```
-
-Use ClearML Task type `data_processing`, not `training`. A GAMESS run is an external program execution, not ML training.
-
-## Examples
-
-```text
-examples/
-  gamess_test_cases/
-    success_fast_water.inp
-    success_fast_water.cml.py
-```
-
-The `.cml.py` file is the user-edited ClearML task submission script. It should contain only execution conditions such as project name, queue, GAMESS input, optional GAMESS install directory, version, and CPU count.
-
-Generated paths such as logs, run manifest JSON, metrics JSON, and scratch/temp directories should not be hard-coded by users. `cml_task_run_gamess.py` and `cml_task_track_gamess.py` create per-execution temporary directories after the queued Tasks are executed by the Agent.
+The submit side resolves `repository`, `branch`, `commit`, and the uncommitted diff before creating ClearML Tasks. `repository` is the location the Agent clones from, not a commit name such as `HEAD`. The `.cml.py` files in `examples/` default to `SOURCE_REPOSITORY="origin"`, which means `git remote origin`; the commit is resolved separately with `git rev-parse HEAD`. Override the clone source with `CLEARML_TASK_REPOSITORY` when needed. The branch can be selected with `CLEARML_TASK_BRANCH`. To pin a specific commit, use `CLEARML_TASK_COMMIT`.

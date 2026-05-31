@@ -2,102 +2,41 @@
 
 [English version](README.md)
 
-このリポジトリは、ClearMLで分子シミュレーションの実行を管理するためのチュートリアルです。
+GAMESSなどの分子シミュレーションを実行するとき、こんなことはないでしょうか。
 
-現在はGAMESSを例にしていますが、考え方は他の分子シミュレーションソフトにも応用できます。入力ファイルをClearMLのアーティファクト（ClearMLに保存するファイル）として渡し、Agent上で分子シミュレーションソフトを実行し、別のClearML Taskでログを追跡・判定する、という構成です。
+- 計算がいつ終わったかすぐに確認できない
+- 過去の計算の入力ファイルやログがどこにあったか分からなくなる
+- 複数の計算の結果をまとめて比較したい
+- LLMエージェントに計算サイクル全体（ジョブ投入・入出力管理・データセット管理）を任せたいが、それらのAPIを一通り備えた既存ツールがない
 
-## 位置づけ
-
-このリポジトリはチュートリアルですが、コードはそのまま小さな土台として使えるようにしています。
-
-- 分子シミュレーションソフトごとの再利用コードは`clearml_gamess/`のようなディレクトリに置く
-- 具体的なClearMLタスク投入用スクリプトは入力ファイルのそばに`<入力ファイル名（拡張子なし）>.cml.py`として置く
-- ClearML Agentの起動など、ローカル運用の補助は`tools/`に置く
-- Agent向けの設計メモは`skills/`に置く
-
-## 構成
-
-```text
-clearml_gamess/
-  README.md
-  README-ja.md
-  cml_pipeline_gamess.py
-  cml_task_run_gamess.py
-  cml_task_track_gamess.py
-  run_gamess.py
-  track_gamess.py
-  examples/
-
-tools/
-  start_clearml_agent.py
-
-skills/
-  clearml/
-    task-design/
-      SKILL.md
-    artifacts/
-      SKILL.md
-    logging/
-      SKILL.md
-    development-workflow/
-      SKILL.md
-    inspect/
-      SKILL.md
-
-local/
-  clearml.conf.example
-```
-
-## 用語
-
-| 用語 | 意味 | このチュートリアルでの使い方 |
-| --- | --- | --- |
-| ClearML Server | Web UIとbackendを提供し、Taskやworkflowの記録、アーティファクト情報をClearML上で扱えるようにする場所です。アーティファクトの実体はClearML Serverだけでなく、設定によって外部object storageや共有ファイルシステムに置くこともできます。 | Task、Pipeline、ログ、アーティファクトを後から確認するための管理先として使います。 |
-| Task | ClearMLが管理する実行単位です。実行するコード、パラメータ、ログ、metrics、アーティファクトなどがTaskに紐づきます。 | GAMESSを起動するTaskと、GAMESSログを追跡するTaskを分けています。 |
-| Queue | 実行待ちのTaskを並べる場所です。 | `.cml.py`で作ったPipeline内のTaskをqueueへ投入し、Agentが順に取得します。 |
-| ClearML Agent | queueを監視し、Taskを取得して、リポジトリ取得、環境構築、コード実行を行うプロセスです。 | エージェントPC上でAgentを起動し、queueから受け取ったTaskとしてGAMESSを実行します。 |
-| Pipeline | 複数のTaskをつなげたworkflowです。 | GAMESSを起動するTaskとログを追跡するTaskをPipelineとしてつなげます。 |
-| ClearMLタスク（Pipeline）投入用PC | ClearMLの正式なサーバー部品ではなく、`.cml.py`を実行してPipelineを作り、Taskをqueueへ投入する作業場所を指します。 | 入力ファイルのそばにある`.cml.py`を実行するPCです。エージェントPCと同じでも別でもかまいません。 |
-| エージェントPC | ClearML Agentを動かすPCです。 | GAMESSをインストールし、`tools/start_clearml_agent.py`をそのマシンの`local/clearml.conf`で実行するPCです。 |
-
-小さく試すだけなら、ClearML Server、投入用PC、エージェントPCをすべて同じマシン上で動かしてもかまいません。
+このチュートリアルでは、**ClearML**を使ってこれらを解決する方法を示します。ClearMLはジョブ投入・入出力管理・データセット管理のAPIを一つのプラットフォームにまとめて備えており、人間が手作業するワークフローでも、LLMエージェントが自動化するワークフローでも、同じAPIで扱えます。ClearMLに計算を投入すると、入力ファイル・ログ・エネルギーなどの結果が自動的に記録され、WebブラウザやAPIからいつでも確認できるようになります。
 
 ## クイックスタート
 
-### 初期設定
+### 必要なもの
 
-#### ClearML server
+- **ClearMLアカウント** — [app.clear.ml](https://app.clear.ml/)で無料作成できます（[self-host](https://github.com/clearml/clearml-server)も可）
+- **GAMESSがインストールされたWindows PC** — GAMESSの設定は[clearml_gamess/README-ja.md](clearml_gamess/README-ja.md)を参照してください
+- **uv** — Pythonの依存関係を管理するツールです（手順4でインストールします）
 
-ClearML serverを用意します。ClearML SDKやAgentがServerへTask、ログ、アーティファクト情報を登録・取得できるようにするためです。
+### 手順
 
-最初は公式の[ClearML hosted server](https://app.clear.ml/)を使うのが簡単です。
+#### 1. ClearMLのAPI credentialを取得する
 
-- workspaceを作る
-- API credentialを発行する
-- API credentialは後で`local/clearml.conf`に設定する
+[app.clear.ml](https://app.clear.ml/)にサインアップし、**Settings → Workspace → Create new credentials**からAPI credentialを発行します。
 
-公式hosted serverはチュートリアルや小規模な検証には便利です。一方で、分子シミュレーションでは入力、ログ、scratch/restart、補助出力などのファイルが増えやすいため、企業内利用で自社データや大きな計算ログを扱う場合は、self-hosted ClearML serverや外部object storageを使う構成を検討してください。このリポジトリではまだ自前serverの構築手順は扱っていませんが、将来的にserver設定例を追加する可能性があります。
-
-#### リポジトリ
-
-ClearMLタスク投入用PCとエージェントPCの両方で、このリポジトリを`git clone`します。同じPCで試す場合は一つのcloneで十分です。エージェントPCにもcloneするのは、`tools/start_clearml_agent.py`をそのマシンの`local/clearml.conf`で実行するためです。
+#### 2. このリポジトリをcloneする
 
 ```bash
 git clone https://github.com/kyusque/clearml-molecular-simulation-tutorial.git
 cd clearml-molecular-simulation-tutorial
 ```
 
-#### ClearML認証設定
+#### 3. 認証情報を設定する
 
-`local/clearml.conf.example`をもとに`local/clearml.conf`を作り、発行したAPI credentialを設定します。ClearMLタスク投入用PCとエージェントPCが別の場合は、それぞれのcloneの`local/clearml.conf`に配置してください。
+`local/clearml.conf.example`をコピーして`local/clearml.conf`を作り、手順1で発行したAPI credentialを設定します。
 
-`local/`はこのマシンだけの設定や一時ログの置き場です。投入ログを残す場合は`local/logs/`に置き、`clearml.conf`の隣には置かないようにします。
-
-#### uv
-
-ClearMLタスク投入用PCとエージェントPCの両方に`uv`をインストールします。
-
-`uv`が未インストールの場合は次のように入れます。このリポジトリのAgent起動helperとClearMLタスク投入用`.cml.py`にはPEP 723のinline script metadataを書いているため、クイックスタートでは`uv sync`は不要です。
+#### 4. uvをインストールする
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -109,54 +48,73 @@ macOS/Linuxでは次の形です。
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-#### GAMESS
+#### 5. ClearML Agentを起動する
 
-エージェントPCにGAMESSをインストールします。GAMESSの配置や`rungms`の扱いは[clearml_gamess/README-ja.md](clearml_gamess/README-ja.md)を参照してください。
-
-### 実行
-
-エージェントPCでClearML Agentを起動します。
+ClearML Agentは、ClearMLから計算ジョブを受け取ってGAMESSを実行するプロセスです。
 
 ```powershell
 uv run tools/start_clearml_agent.py --queue default --create-queue --cpu-only
 ```
 
-ClearMLタスク投入用PCでGAMESSのサンプルPipelineを作成し、Taskをqueueへ投入します。
+#### 6. サンプル計算を投入する
+
+別のターミナルで実行します。
 
 ```powershell
 uv run clearml_gamess/examples/water_rhf_sto3g_opt.cml.py
 ```
 
-## 利用者と開発者
+[app.clear.ml](https://app.clear.ml/)を開くと、計算がTaskとして登録され、Agentが実行を始めます。完了後はログ・エネルギーmetricsをWebから確認できます。
 
-入力ファイルを少し直して計算を流すだけなら、Gitを強く意識する必要はありません。`.inp`と`.cml.py`を編集して新しいPipelineを作れば、入力ファイルは`pipeline_input`アーティファクトとしてClearMLに残ります。
+## 仕組み
 
-Gitが重要になるのは、Agent上で動くタスク実行コードを調整する場合です。アーティファクト登録、ログのプレビュー、scratchファイルの回収、metrics抽出などを直すときは、そのPythonコードの差分がAgentへ届く必要があります。この用途では、毎回commitするよりも、意図した差分がTaskのsource diffに入っていることを確認する方が大事です。新規ファイルは`git add`してから投入してください。
+ClearMLを使うと3つの部品が連携して動きます。
+
+| 部品 | 何をするか |
+| --- | --- |
+| **このPC（投入側）** | `.cml.py`スクリプトを実行して計算をClearMLに登録し、queueに投入する |
+| **ClearML Agent** | queueを監視して計算を受け取り、GAMESSを実行する |
+| **ClearML Server（app.clear.ml）** | Task・ログ・アーティファクトを管理し、WebブラウザからアクセスできるUIを提供する |
+
+投入から完了までの流れはこうです。
+
+1. `.cml.py`を実行 → 入力ファイルがClearMLに保存され、計算Taskがqueueに入る
+2. AgentがTaskを受け取る → GAMESSを実行してログをリアルタイムに送信する
+3. 計算が終わる → ログ・エネルギーなどの値・scratch/tempファイルがアーティファクトとして保存される
+4. 計算が異常終了した場合 → TaskがfailedになりWebから確認できる
+
+小さく試す場合はすべて同じPCで動かせます。計算を別のマシンに任せたい場合は、そのマシンでAgentを起動します。ClearML Serverはapp.clear.mlのSaaSのほか、自前でself-hostすることもできます。
+
+## 自分の計算を投入する
+
+各入力ファイルのそばに`.cml.py`という投入用スクリプトを置くのがこのリポジトリの規則です。
+
+```
+clearml_gamess/examples/
+  water_rhf_sto3g_opt.inp        ← GAMESS入力ファイル
+  water_rhf_sto3g_opt.cml.py     ← ClearMLへの投入スクリプト
+```
+
+自分の計算を投入するには：
+
+1. GAMESS入力ファイル（`.inp`）を用意する
+2. 既存の`.cml.py`をコピーしてプロジェクト名・入力ファイルのパスを書き換える
+3. `uv run your_calculation.cml.py`で投入する
+
+入力ファイルを変えて再投入するだけであればGitは不要です。ログ解析やmetricsの抽出コードを変える場合は、その変更がAgentへ届く必要があります。新規ファイルは`git add`してから投入してください。
+
+## テストケース
+
+`clearml_gamess/examples/gamess_test_cases/`に動作確認用の入力があります。
+
+| ファイル | 内容 |
+| --- | --- |
+| `success_fast_water` | 小さい水分子の計算（すぐ終わる） |
+| `success_long_c4h6_uhf_hessian` | C4H6のHessian計算（時間がかかる） |
+| `error_fast_bad_scf` | SCF収束失敗（失敗Taskの確認用） |
+| `error_delayed_timlim_c28` | 時間制限超過（TIMLIMエラーの確認用） |
 
 ## 詳細
 
-GAMESS固有の使い方と設計は、こちらにまとめています。
-
-- [clearml_gamess/README-ja.md](clearml_gamess/README-ja.md)
-
-Agent向けの設計メモと開発時の運用メモはこちらです。
-
-- [skills/clearml/task-design/SKILL.md](skills/clearml/task-design/SKILL.md)
-- [skills/clearml/artifacts/SKILL.md](skills/clearml/artifacts/SKILL.md)
-- [skills/clearml/logging/SKILL.md](skills/clearml/logging/SKILL.md)
-- [skills/clearml/development-workflow/SKILL.md](skills/clearml/development-workflow/SKILL.md)
-- [skills/clearml/inspect/SKILL.md](skills/clearml/inspect/SKILL.md)
-
-## 基本パターン
-
-分子シミュレーションソフトごとに、基本的には次の形で組みます。
-
-1. 入力ファイルをClearMLアーティファクトとして登録する
-2. ClearML Agent上で分子シミュレーションソフトを実行する
-3. 後続のTaskへ渡すための実行マニフェストJSONを作る
-4. 別のClearML Taskで実行マニフェストJSONを読み、ログを追跡して終了状態を判定する
-5. ログやscratch/tempなど、実行後に生成されたファイルをアーティファクトとして登録する
-6. track側の処理でエネルギーなどの必要な値を抽出し、`tracking_metrics`として残す
-7. 分子シミュレーションソフトが異常終了していた場合は、アーティファクトを残したうえで判定側のClearML Taskをfailedにする
-
-このリポジトリでは、この流れをClearML Pipelineの`run_gamess` stepと`track_gamess` stepとして表現しています。
+- GAMESS固有の設定（インストール場所・`rungms`の設定）: [clearml_gamess/README-ja.md](clearml_gamess/README-ja.md)
+- Agent・Pipeline・アーティファクトの設計メモ: [skills/clearml/](skills/clearml/)
