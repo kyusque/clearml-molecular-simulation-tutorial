@@ -12,6 +12,7 @@ Use this skill when deciding what a ClearML task should print to the console and
 - ClearML console output is useful for following progress, but it is not the durable record. Upload the full simulator log as an artifact.
 - Keep console output human-followable: show enough log context to understand progress and failure, but do not rely on the console as the only copy.
 - If the UI or SDK truncates console output, inspect the uploaded log artifact.
+- The simulator execution entry point must also log startup failures. If the task fails before the tracker starts, print a bounded startup log tail, upload the startup log as a text artifact when it exists, and record the tail in the run manifest.
 
 ## Emitting Simulator Logs
 

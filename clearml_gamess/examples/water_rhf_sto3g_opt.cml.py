@@ -19,10 +19,16 @@ RUN_TASK_NAME = "water_rhf_sto3g_opt.cml_task_run_gamess"
 TRACK_TASK_NAME = "water_rhf_sto3g_opt.cml_task_track_gamess"
 DEFAULT_QUEUE = "default"
 WORKER_QUEUE = "default"
+# Repository names where the agent clones code from. "origin" means git remote origin.
+# The commit is resolved separately from the current HEAD by cml_pipeline_gamess.py.
+SOURCE_REPOSITORY = os.environ.get("CLEARML_TASK_REPOSITORY", "origin")
+SOURCE_BRANCH = os.environ.get("CLEARML_TASK_BRANCH")
+SOURCE_COMMIT = os.environ.get("CLEARML_TASK_COMMIT")
 
 INPUT = Path("clearml_gamess/examples/water_rhf_sto3g_opt.inp")
-GAMESS_DIR = Path("C:/Users/Public/gamess-64")
-GAMESS_VERSION = "2023.R1.intel"
+# None lets cml_task_run_gamess.py resolve the GAMESS directory on the agent machine.
+GAMESS_DIR: Path | None = None
+GAMESS_VERSION = os.environ.get("CLEARML_GAMESS_VERSION") or os.environ.get("GAMESS_VERSION")
 NCPUS = 1
 
 
@@ -55,6 +61,9 @@ def main() -> None:
         pipeline_version=PIPELINE_VERSION,
         run_task_name=RUN_TASK_NAME,
         track_task_name=TRACK_TASK_NAME,
+        source_repository=SOURCE_REPOSITORY,
+        source_branch=SOURCE_BRANCH,
+        source_commit=SOURCE_COMMIT,
         controller_entry_point="water_rhf_sto3g_opt.cml.py",
         controller_working_dir="clearml_gamess/examples",
         default_queue=DEFAULT_QUEUE,

@@ -13,6 +13,41 @@
 
 `build_pipeline()`を呼ぶ前に、`CLEARML_CONFIG_FILE`を設定しておく必要があります。未設定なら即エラーにします。
 
+## Agentで使うコード
+
+`cml_pipeline_gamess.py`は、ClearML Taskの`repository`に既定でこのリポジトリのローカルパスを使います。同じマシン上でPipelineControllerとClearML Agentを動かす開発時は、この形がいちばん素直です。
+
+submit側は、Taskを作る時点で`repository`、`branch`、`commit`、未commit差分を確定してClearMLへ渡します。`repository`はAgentがcloneする場所で、`HEAD`のようなcommit名ではありません。`examples/`の`.cml.py`は既定で`SOURCE_REPOSITORY="origin"`を指定し、`git remote origin`をclone元にします。commitは別に`git rev-parse HEAD`で確定します。別の場所を使う場合は`CLEARML_TASK_REPOSITORY`で上書きしてください。branchは`CLEARML_TASK_BRANCH`、特定commitは`CLEARML_TASK_COMMIT`で指定できます。
+
+WindowsでTaskを作ってmacOS Agentで実行する場合、Windowsの`C:/Users/...`はmacOSから見えません。その場合は、macOS側のローカルリポジトリパス、共有ファイルシステム上のパス、またはGit remoteのどれかを明示する必要があります。`cml_pipeline_gamess.py`は実行に必要なPythonコードの`git diff --binary HEAD`をTaskに渡すため、base commitがAgentからcloneできれば、未commit差分もAgent側で適用されます。新規ファイルは`git add`してから投入してください。
+
+## GAMESSのインストール
+
+このリポジトリにはGAMESS本体は含めていません。ClearML Agentが動くマシンに、あらかじめGAMESSをインストールしておく必要があります。
+
+`GAMESS_DIR`を明示しない場合、`cml_task_run_gamess.py`がGAMESSの場所を探します。Windowsでは`C:/Users/Public/gamess-64`を使います。macOS/Linuxでは`PATH`上の`rungms`を探し、その親ディレクトリをGAMESSのディレクトリとして扱います。
+
+macOS/Linuxで`rungms`を`PATH`に置かない場合は、Agentを起動する環境で`CLEARML_GAMESS_DIR`または`GAMESS_DIR`を設定してください。`cml_task_run_gamess.py`は、まずこれらの環境変数を見て、その下に`rungms`があるか確認します。
+
+このリポジトリの`tools/start_clearml_agent.py`からAgentを起動する場合は、起動時に`rungms`を探し、見つかったディレクトリを`CLEARML_GAMESS_DIR`としてAgentプロセスへ渡します。`CLEARML_GAMESS_VERSION`が未設定なら、GAMESSディレクトリの`gamess.*.x`または`gamess.*.exe`からversionを推定して渡します。
+
+macOS/Linux版の`rungms`は、拡張子なしの入力名を受け取り、入力ファイルをカレントディレクトリから読む構成があります。そのため、このwrapperは入力ファイルをGAMESSディレクトリには置かず、agent側で作ったrunごとの一時作業ディレクトリにコピーし、その一時作業ディレクトリをカレントディレクトリにして`rungms <stem>`を実行します。補助ファイル探索のため、`GMSPATH`と`GAMESS_DIR`にはGAMESSディレクトリを渡します。
+
+GAMESSの`rungms`にはGNU系の`readlink -f`を使う版があります。macOS標準の`readlink`には`-f`がないため、このwrapperは一時作業ディレクトリに互換shimを作り、PATHの先頭に追加してから`rungms`を起動します。Agent環境に`GMSPATH`が既にある場合でも、task側で見つけたGAMESSディレクトリを優先します。
+
+`rungms`スクリプト内に`GMSPATH`が固定で書かれている場合は、GAMESSインストール先を直接編集せず、一時作業ディレクトリに`rungms`のコピーを作って、そのコピーの`GMSPATH`だけをtask側で見つけたGAMESSディレクトリへ補正します。
+
+Windowsでは、このディレクトリに少なくとも次のファイルがある前提です。
+
+- `rungms.bat`
+- `gamess.<version>.exe`
+
+Windowsの既定設定では`version="2023.R1.intel"`を使うため、`C:/Users/Public/gamess-64/gamess.2023.R1.intel.exe`を探します。macOS/Linuxでは、versionを明示しない場合はGAMESSディレクトリの`gamess.*.x`からversionを推定します。別のバージョンを使う場合は、Agentを起動する環境で`CLEARML_GAMESS_VERSION`または`GAMESS_VERSION`を設定してください。
+
+WindowsとLinux x86_64のPython環境には`impi-devel`を入れています。このwrapperでは、GAMESS実行時に必要なIntel MPI runtimeをPython環境側の`impi-devel`/`impi-rt`から供給する前提です。`run_gamess.py`は実行時に仮想環境の`Library/bin`を`PATH`へ追加し、GAMESSからMPI関連DLLが見えるようにします。
+
+GAMESS本体のディレクトリだけを別の場所へコピーして実行する場合でも、必要なIntel MPI runtimeが`PATH`から見えるようにしておく必要があります。Windows/Linux x86_64では`impi-devel`を使えますが、macOS arm64ではpipから`impi-devel`をインストールできないため、ClearML Taskのrequirementsからはplatform markerで除外しています。`impi-devel`はGAMESS本体の代替ではありませんが、このチュートリアルのWindows実行ではGAMESSを起動するためのruntime依存として扱っています。
+
 ## 設計
 
 `cml_task_run_gamess.py`:
@@ -21,6 +56,7 @@
 - Agent側に、その実行専用の一時ディレクトリを作る
 - GAMESSを投入し、起動直後の明らかな失敗だけを確認する
 - `cml_task_track_gamess.py`に渡すための`gamess_run_manifest`をアーティファクトとして登録する
+- 実際に起動した`rungms`または`rungms.bat`を`gamess_rungms`として登録する
 
 submit-onlyモードの`gamess_run_manifest`は、GAMESSの終了結果ではなく、後続の`cml_task_track_gamess.py`が追跡を始めるための情報です。たとえば以下のような値を入れます。
 
@@ -30,6 +66,7 @@ submit-onlyモードの`gamess_run_manifest`は、GAMESSの終了結果ではな
 - `gamess_dir`、`version`、`ncpus`: 実行環境
 - `live_log_path`: `cml_task_track_gamess.py`が追跡するログファイル
 - `scratch_dir`、`scratch_pattern`: scratch/restartファイルを回収するための情報
+- `rungms_path`: 実際に起動した`rungms`または`rungms.bat`
 - `submission_status`: `submitted`、`submit_failed`、`startup_failed`
 - `pid`、`submitted_at`: 投入したプロセスの情報
 
@@ -44,11 +81,11 @@ submit-onlyモードの`gamess_run_manifest`は、GAMESSの終了結果ではな
 - ログ中の終了メッセージを読み、計算状態を判定する
 - 判定結果を`tracking_metrics`に書き出し、アーティファクトとして登録する
 - `gamess_log`をテキストプレビュー付きのアーティファクトとして登録する
-- 必要ならscratch/restartファイルを`gamess_temp`として登録する
+- 必要ならGAMESSログからscratch/restartディレクトリを読み取り、対象ファイルを`gamess_temp`として登録する
 - エネルギー抽出など、追加の後処理コールバックを実行する
 - GAMESSが失敗していた場合は、アーティファクトを残したうえでClearML Taskをfailedにする
 
-Pipeline Taskに集約する監視artifactは、taskごとに名前を分けます（例: `pipeline_gamess_input`, `run_gamess_manifest`, `track_gamess_metrics`, `track_gamess_log`, `track_gamess_temp`）。
+Pipeline Taskに集約する監視artifactは、taskごとに名前を分けます（例: `pipeline_gamess_input`, `run_gamess_manifest`, `run_gamess_rungms`, `track_gamess_metrics`, `track_gamess_log`, `track_gamess_temp`）。
 
 終了判定メッセージ:
 
@@ -83,6 +120,6 @@ examples/
     success_fast_water.cml.py
 ```
 
-`.cml.py`は、ユーザーが編集する投入用スクリプトです。ここには、プロジェクト名、キュー、GAMESS入力、GAMESSのインストール先、バージョン、CPU数のような実行条件だけを書きます。
+`.cml.py`は、ユーザーが編集する投入用スクリプトです。ここには、プロジェクト名、キュー、GAMESS入力、必要ならGAMESSのインストール先、バージョン、CPU数のような実行条件だけを書きます。
 
 ログ、実行マニフェストJSON、metrics JSON、scratch/tempディレクトリなどの生成物のパスは、ユーザーが直接書きません。キュー投入後にAgentが実行する`cml_task_run_gamess.py`と`cml_task_track_gamess.py`が、実行ごとに一時ディレクトリを作って管理します。

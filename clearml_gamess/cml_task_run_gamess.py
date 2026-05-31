@@ -1,14 +1,27 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import tempfile
 from pathlib import Path
 
 try:
-    from clearml_gamess.run_gamess import REPO_ROOT, resolve_from_repo, run_gamess, write_run_manifest_json
+    from clearml_gamess.run_gamess import (
+        REPO_ROOT,
+        resolve_from_repo,
+        run_gamess,
+        write_run_manifest_json,
+    )
 except ModuleNotFoundError:
     from run_gamess import REPO_ROOT, resolve_from_repo, run_gamess, write_run_manifest_json
+
+
+WINDOWS_DEFAULT_GAMESS_DIR = Path("C:/Users/Public/gamess-64")
+WINDOWS_DEFAULT_GAMESS_DIR_TEXT = "c:/users/public/gamess-64"
+WINDOWS_DEFAULT_GAMESS_VERSION = "2023.R1.intel"
+GAMESS_DIR_ENV_VARS = ("CLEARML_GAMESS_DIR", "GAMESS_DIR")
+GAMESS_VERSION_ENV_VARS = ("CLEARML_GAMESS_VERSION", "GAMESS_VERSION")
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +61,84 @@ def get_task_int_arg(args: argparse.Namespace, params: dict[str, str], name: str
         return int(value)
     param_value = params.get(f"Args/--{name}")
     return int(param_value) if param_value else 1
+
+
+def discover_gamess_version(gamess_dir: Path) -> str | None:
+    suffix = ".exe" if os.name == "nt" else ".x"
+    versions: list[str] = []
+    for executable in sorted(gamess_dir.glob(f"gamess.*{suffix}")):
+        name = executable.name
+        version = name.removeprefix("gamess.").removesuffix(suffix)
+        if version:
+            versions.append(version)
+    return versions[0] if versions else None
+
+
+def resolve_task_gamess_version(version_arg: str | None, gamess_dir: Path) -> str | None:
+    if version_arg:
+        if os.name != "nt" and version_arg == WINDOWS_DEFAULT_GAMESS_VERSION:
+            discovered_version = discover_gamess_version(gamess_dir)
+            return discovered_version
+        return version_arg
+    for env_name in GAMESS_VERSION_ENV_VARS:
+        env_value = os.environ.get(env_name)
+        if env_value:
+            return env_value
+    if os.name == "nt":
+        return WINDOWS_DEFAULT_GAMESS_VERSION
+    return discover_gamess_version(gamess_dir)
+
+
+def find_gamess_dir() -> Path:
+    for env_name in GAMESS_DIR_ENV_VARS:
+        env_value = os.environ.get(env_name)
+        if env_value:
+            gamess_dir = Path(env_value).expanduser()
+            if (gamess_dir / ("rungms.bat" if os.name == "nt" else "rungms")).exists():
+                return gamess_dir
+            raise FileNotFoundError(
+                f"{env_name} is set but rungms was not found under GAMESS directory: {gamess_dir}"
+            )
+
+    if os.name == "nt":
+        if (WINDOWS_DEFAULT_GAMESS_DIR / "rungms.bat").exists():
+            return WINDOWS_DEFAULT_GAMESS_DIR
+        raise FileNotFoundError(
+            "GAMESS directory was not specified and the default Windows installation was not found: "
+            f"{WINDOWS_DEFAULT_GAMESS_DIR.as_posix()}"
+        )
+
+    rungms_path = shutil.which("rungms")
+    if rungms_path:
+        return Path(rungms_path).resolve().parent
+
+    raise FileNotFoundError(
+        "GAMESS directory was not specified and rungms was not found on PATH. "
+        "Set CLEARML_GAMESS_DIR or GAMESS_DIR on the agent, or add rungms to PATH."
+    )
+
+
+def normalize_path_text(path: Path) -> str:
+    return str(path).replace("\\", "/").rstrip("/").lower()
+
+
+def looks_like_windows_drive_path(path: Path) -> bool:
+    text = str(path)
+    return len(text) >= 2 and text[1] == ":"
+
+
+def resolve_task_gamess_dir(gamess_dir_arg: Path | None) -> Path:
+    if gamess_dir_arg is None:
+        return find_gamess_dir().resolve()
+    if os.name != "nt" and normalize_path_text(gamess_dir_arg) == WINDOWS_DEFAULT_GAMESS_DIR_TEXT:
+        return find_gamess_dir().resolve()
+    if os.name != "nt" and looks_like_windows_drive_path(gamess_dir_arg):
+        raise ValueError(
+            "A Windows GAMESS path was passed to a non-Windows agent: "
+            f"{gamess_dir_arg}. Set GAMESS_DIR to None to let cml_task_run_gamess.py find rungms on PATH, "
+            "or pass a GAMESS directory that exists on this agent."
+        )
+    return resolve_from_repo(gamess_dir_arg).resolve()
 
 
 def upload_text_configuration(task, name: str, path: Path) -> None:
@@ -97,11 +188,11 @@ def main() -> None:
     if input_arg is None:
         raise ValueError("--input is required, either as a CLI argument or as ClearML parameter Args/--input")
 
-    version = get_task_str_arg(args, params, "version") or "2023.R1.intel"
     ncpus = get_task_int_arg(args, params, "ncpus")
     run_workspace = Path(tempfile.mkdtemp(prefix=f"{input_arg.stem}_", suffix="_gamess"))
     input_path = resolve_input_path(task, input_arg, run_workspace)
-    gamess_dir = (get_task_path_arg(args, params, "gamess-dir") or Path("C:/Users/Public/gamess-64")).resolve()
+    gamess_dir = resolve_task_gamess_dir(get_task_path_arg(args, params, "gamess-dir"))
+    version = resolve_task_gamess_version(get_task_str_arg(args, params, "version"), gamess_dir)
     log_arg = get_task_path_arg(args, params, "log")
     run_manifest_json_arg = get_task_path_arg(args, params, "run-manifest-json")
     temp_dir_arg = get_task_path_arg(args, params, "gamess-temp-dir")
@@ -149,11 +240,21 @@ def main() -> None:
     logger.report_scalar("process", "return_code", return_code, iteration=0)
 
     upload_text_artifact(task, "gamess_run_manifest", run_manifest_json, ".json")
+    rungms_path = Path(str(result.get("rungms_path", "")))
+    if rungms_path.exists():
+        upload_text_artifact(task, "gamess_rungms", rungms_path, ".txt")
+    if log_path.exists():
+        upload_text_artifact(task, "gamess_log", log_path, ".txt")
 
     if return_code != 0:
+        startup_log_tail = result.get("startup_log_tail")
+        if startup_log_tail:
+            print("--- GAMESS startup log tail ---", flush=True)
+            print(str(startup_log_tail), flush=True)
         raise RuntimeError(
             "cml_task_run_gamess.py failed before cml_task_track_gamess.py could track the job: "
-            f"return_code={return_code}, submission_status={result.get('submission_status')}"
+            f"return_code={return_code}, submission_status={result.get('submission_status')}, "
+            f"log_path={log_path.as_posix()}"
         )
 
     task.close()

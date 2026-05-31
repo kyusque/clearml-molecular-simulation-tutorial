@@ -41,6 +41,7 @@ task.upload_artifact(
 - Prefer names like:
   - `pipeline_gamess_input`
   - `run_gamess_manifest`
+  - `run_gamess_rungms`
   - `track_gamess_log`
   - `track_gamess_metrics`
   - `track_gamess_temp`
@@ -51,5 +52,11 @@ task.upload_artifact(
 - Treat scratch/restart files as optional outputs. They can be large, implementation-specific, and mostly useful for restart or debugging.
 - Make scratch upload explicit, for example with `--upload-scratch-artifact`. Do not upload scratch by default unless the workflow depends on restart files.
 - If scratch upload is enabled, collect only files that match the current case pattern, copy them into a per-task directory, and upload that directory as a zipped artifact such as `gamess_temp`.
+- For wrappers such as GAMESS, prefer discovering the actual scratch/restart directories from the simulator log when the wrapper decides them at runtime. A manifest `scratch_dir` can be a fallback or collection workspace, not necessarily the true simulator scratch directory.
 - Clean up scratch files after tracking has uploaded the useful subset. This avoids stale restart files being picked up by later runs.
 - Do not create a separate extract task unless there is a separate user workflow. In the common case, scratch collection belongs to `cml_task_track_<software>.py`.
+
+## Wrapper Scripts
+
+- If a task runs a wrapper script that may differ by worker or be patched/shimmed at runtime, upload the exact launched wrapper as an artifact such as `gamess_rungms`. This applies to Windows `rungms.bat` and Unix `rungms` alike.
+- Keep the artifact name about the role, not the platform. Use one name such as `gamess_rungms` rather than separate names for `.bat` and shell variants.

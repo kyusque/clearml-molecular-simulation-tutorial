@@ -90,6 +90,15 @@ def find_gamess_dir() -> Path | None:
     return None
 
 
+def find_gamess_version(gamess_dir: Path) -> str | None:
+    suffix = ".exe" if os.name == "nt" else ".x"
+    for executable in sorted(gamess_dir.glob(f"gamess.*{suffix}")):
+        version = executable.name.removeprefix("gamess.").removesuffix(suffix)
+        if version:
+            return version
+    return None
+
+
 def main() -> int:
     args = parse_args()
     config_file = resolve_clearml_config_file(args.config_file)
@@ -109,6 +118,14 @@ def main() -> int:
     if gamess_dir:
         env["CLEARML_GAMESS_DIR"] = str(gamess_dir)
         env.setdefault("GAMESS_DIR", str(gamess_dir))
+        gamess_version = os.environ.get("CLEARML_GAMESS_VERSION") or os.environ.get("GAMESS_VERSION")
+        if not gamess_version:
+            gamess_version = find_gamess_version(gamess_dir)
+        if gamess_version:
+            env["CLEARML_GAMESS_VERSION"] = gamess_version
+            env.setdefault("GAMESS_VERSION", gamess_version)
+    else:
+        gamess_version = None
 
     command = ["clearml-agent", "daemon", "--queue", *args.queue]
     if args.foreground:
@@ -123,6 +140,8 @@ def main() -> int:
     print(f"CLEARML_CONFIG_FILE={config_file.as_posix()}", flush=True)
     if gamess_dir:
         print(f"CLEARML_GAMESS_DIR={gamess_dir.as_posix()}", flush=True)
+        if gamess_version:
+            print(f"CLEARML_GAMESS_VERSION={gamess_version}", flush=True)
     else:
         print("CLEARML_GAMESS_DIR was not set because rungms was not found.", flush=True)
     print(" ".join(command), flush=True)

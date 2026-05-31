@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,9 +25,11 @@ STARTUP_FAILURE_PATTERNS = (
     "failed to read file names",
     "could not find",
     "not found",
+    "bad cpu type in executable",
     "指定されたパス",
     "パスが見つかりません",
 )
+STARTUP_LOG_TAIL_LINES = 80
 
 
 def resolve_from_repo(path: Path) -> Path:
@@ -35,11 +38,22 @@ def resolve_from_repo(path: Path) -> Path:
     return REPO_ROOT / path
 
 
-def env_with_venv_library_bin() -> dict[str, str]:
+def env_with_venv_library_bin(
+    gamess_dir: Path | None = None,
+    prepend_path: Path | None = None,
+) -> dict[str, str]:
     env = os.environ.copy()
+    path_entries: list[str] = []
+    if prepend_path is not None:
+        path_entries.append(prepend_path.as_posix())
     library_bin = Path(sys.prefix) / "Library" / "bin"
     if library_bin.exists():
-        env["PATH"] = f"{library_bin}{os.pathsep}{env.get('PATH', '')}"
+        path_entries.append(library_bin.as_posix())
+    if path_entries:
+        env["PATH"] = os.pathsep.join([*path_entries, env.get("PATH", "")])
+    if gamess_dir is not None:
+        env["GAMESS_DIR"] = gamess_dir.as_posix()
+        env["GMSPATH"] = gamess_dir.as_posix()
     env[TASK_MANAGES_SCRATCH_ENV] = "TRUE"
     env[SUPPRESS_DISK_USAGE_ENV] = "TRUE"
     return env
@@ -111,10 +125,79 @@ def read_log_text_if_exists(log_path: Path) -> str:
     return log_path.read_text(encoding="utf-8", errors="replace")
 
 
+def tail_text(text: str, max_lines: int = STARTUP_LOG_TAIL_LINES) -> str:
+    lines = text.splitlines()
+    return "\n".join(lines[-max_lines:])
+
+
+def prepare_nonwindows_rungms_input(input_path: Path, run_workspace: Path) -> Path:
+    run_workspace.mkdir(parents=True, exist_ok=True)
+    rungms_input_path = run_workspace / f"{input_path.stem}.inp"
+    if input_path.resolve() == rungms_input_path.resolve():
+        return rungms_input_path
+    try:
+        shutil.copy2(input_path, rungms_input_path)
+    except OSError as exc:
+        raise RuntimeError(
+            "Non-Windows rungms expects the input stem argument to point to a readable .inp file. "
+            f"Failed to copy {input_path.as_posix()} to the per-run workspace "
+            f"{rungms_input_path.as_posix()}."
+        ) from exc
+    return rungms_input_path
+
+
+def prepare_nonwindows_path_shims(run_workspace: Path) -> Path:
+    shim_dir = run_workspace / "bin"
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    readlink_shim = shim_dir / "readlink"
+    readlink_shim.write_text(
+        """#!/bin/sh
+if [ "$1" = "-f" ]; then
+  shift
+  case "$1" in
+    /*) target="$1" ;;
+    *) target="$(pwd)/$1" ;;
+  esac
+  dir=$(dirname "$target") || exit $?
+  base=$(basename "$target") || exit $?
+  if [ -d "$dir" ]; then
+    cd "$dir" || exit $?
+    printf '%s/%s\\n' "$(pwd -P)" "$base"
+  else
+    printf '%s\\n' "$target"
+  fi
+else
+  exec /usr/bin/readlink "$@"
+fi
+""",
+        encoding="utf-8",
+    )
+    readlink_shim.chmod(0o755)
+    return shim_dir
+
+
+def prepare_nonwindows_rungms_script(rungms_path: Path, run_workspace: Path, gamess_dir: Path) -> Path:
+    patched_rungms = run_workspace / "rungms"
+    text = rungms_path.read_text(encoding="utf-8", errors="replace")
+    text = re.sub(
+        r"(?m)^(\s*set\s+GMSPATH\s*=\s*).*$",
+        rf"\1{gamess_dir.as_posix()}",
+        text,
+    )
+    text = re.sub(
+        r"(?m)^(\s*setenv\s+GMSPATH\s+).*$",
+        rf"\1{gamess_dir.as_posix()}",
+        text,
+    )
+    patched_rungms.write_text(text, encoding="utf-8")
+    patched_rungms.chmod(0o755)
+    return patched_rungms
+
+
 def run_gamess(
     input_path: Path,
     gamess_dir: Path,
-    version: str,
+    version: str | None,
     ncpus: int,
     log_path: Path,
     temp_dir: Path | None,
@@ -122,34 +205,40 @@ def run_gamess(
     temp_files: list[Path],
     submit_only: bool = False,
 ) -> dict[str, object]:
-    rungms_path = gamess_dir / "rungms.bat"
-    gamess_exe_path = gamess_dir / f"gamess.{version}.exe"
+    windows_rungms = os.name == "nt"
+    rungms_path = gamess_dir / ("rungms.bat" if windows_rungms else "rungms")
+    gamess_exe_path = gamess_dir / f"gamess.{version}.exe" if version else None
 
     if not input_path.exists():
         raise FileNotFoundError(f"GAMESS input was not found: {input_path}")
     if not rungms_path.exists():
-        raise FileNotFoundError(f"rungms.bat was not found: {rungms_path}")
-    if not gamess_exe_path.exists():
+        raise FileNotFoundError(f"{rungms_path.name} was not found: {rungms_path}")
+    if windows_rungms and (gamess_exe_path is None or not gamess_exe_path.exists()):
         raise FileNotFoundError(f"GAMESS executable was not found: {gamess_exe_path}")
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     if log_path.exists():
         log_path.unlink()
 
-    command = [
-        str(rungms_path),
-        str(input_path),
-        version,
-        str(ncpus),
-        str(log_path),
-    ]
-    display_command = [
-        rungms_path.as_posix(),
-        input_path.as_posix(),
-        version,
-        str(ncpus),
-        log_path.as_posix(),
-    ]
+    if windows_rungms:
+        rungms_input_path = input_path
+        command = [str(rungms_path), str(input_path), version, str(ncpus), str(log_path)]
+        command_cwd = gamess_dir
+        prepend_path = None
+    else:
+        rungms_input_path = prepare_nonwindows_rungms_input(input_path, log_path.parent)
+        prepend_path = prepare_nonwindows_path_shims(rungms_input_path.parent)
+        patched_rungms_path = prepare_nonwindows_rungms_script(
+            rungms_path=rungms_path,
+            run_workspace=rungms_input_path.parent,
+            gamess_dir=gamess_dir,
+        )
+        command = [str(patched_rungms_path), rungms_input_path.stem]
+        if version:
+            command.append(version)
+            command.append(str(ncpus))
+        command_cwd = rungms_input_path.parent
+    display_command = [Path(command[0]).as_posix(), *command[1:]]
     print("Running GAMESS:")
     print(" ".join(display_command), flush=True)
 
@@ -159,13 +248,24 @@ def run_gamess(
         rungms_settings = load_rungms_settings(gamess_dir)
         scratch_dir = Path(rungms_settings["SCRATCHDIR"]).resolve() if rungms_settings.get("SCRATCHDIR") else temp_dir
         # Submit the GAMESS job and watch a short startup window for immediate failures.
-        process = subprocess.Popen(
-            command,
-            cwd=gamess_dir,
-            env=env_with_venv_library_bin(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if windows_rungms:
+            process = subprocess.Popen(
+                command,
+                cwd=command_cwd,
+                env=env_with_venv_library_bin(gamess_dir, prepend_path),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            log_file = log_path.open("w", encoding="utf-8", errors="replace")
+            process = subprocess.Popen(
+                command,
+                cwd=command_cwd,
+                env=env_with_venv_library_bin(gamess_dir, prepend_path),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+            log_file.close()
         startup_deadline = time.time() + SUBMIT_STARTUP_GRACE_SECONDS
         startup_log_text = ""
         immediate_return_code = None
@@ -177,8 +277,13 @@ def run_gamess(
             time.sleep(0.25)
 
         if immediate_return_code is not None or output_has_startup_failure(startup_log_text):
+            startup_completed_normally = GAMESS_NORMAL_TERMINATION in startup_log_text
             return_code = int(immediate_return_code) if immediate_return_code is not None else 1
+            if not startup_completed_normally and return_code == 0:
+                return_code = 1
             submission_status = "submit_failed"
+            if startup_completed_normally and return_code == 0:
+                submission_status = "completed_during_startup"
             if output_has_startup_failure(startup_log_text) and immediate_return_code is None:
                 submission_status = "startup_failed"
                 process.terminate()
@@ -186,6 +291,8 @@ def run_gamess(
                 "schema": "clearml_gamess.run_manifest.v1",
                 "mode": "submit_only",
                 "input_path": input_path.as_posix(),
+                "rungms_input_path": rungms_input_path.as_posix(),
+                "rungms_path": Path(command[0]).as_posix(),
                 "gamess_dir": gamess_dir.as_posix(),
                 "version": version,
                 "ncpus": ncpus,
@@ -194,6 +301,7 @@ def run_gamess(
                 "scratch_pattern": f"{input_path.stem}.*",
                 "return_code": return_code,
                 "submission_status": submission_status,
+                "startup_log_tail": tail_text(startup_log_text),
                 "submit_only": True,
                 "pid": process.pid,
                 "submitted_at": datetime.now(timezone.utc).isoformat(),
@@ -202,6 +310,8 @@ def run_gamess(
             "schema": "clearml_gamess.run_manifest.v1",
             "mode": "submit_only",
             "input_path": input_path.as_posix(),
+            "rungms_input_path": rungms_input_path.as_posix(),
+            "rungms_path": Path(command[0]).as_posix(),
             "gamess_dir": gamess_dir.as_posix(),
             "version": version,
             "ncpus": ncpus,
@@ -215,7 +325,23 @@ def run_gamess(
             "submitted_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    completed = subprocess.run(command, cwd=gamess_dir, env=env_with_venv_library_bin(), check=False)
+    if windows_rungms:
+        completed = subprocess.run(
+            command,
+            cwd=command_cwd,
+            env=env_with_venv_library_bin(gamess_dir, prepend_path),
+            check=False,
+        )
+    else:
+        with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
+            completed = subprocess.run(
+                command,
+                cwd=command_cwd,
+                env=env_with_venv_library_bin(gamess_dir, prepend_path),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
     log_text = log_path.read_text(errors="replace") if log_path.exists() else ""
     terminated_normally = GAMESS_NORMAL_TERMINATION in log_text
     terminated_abnormally = GAMESS_ABNORMAL_TERMINATION in log_text
@@ -232,6 +358,8 @@ def run_gamess(
         "schema": "clearml_gamess.run_manifest.v1",
         "mode": "wait",
         "input_path": input_path.as_posix(),
+        "rungms_input_path": str(input_path.as_posix() if windows_rungms else rungms_input_path.as_posix()),
+        "rungms_path": Path(command[0]).as_posix(),
         "gamess_dir": gamess_dir.as_posix(),
         "version": version,
         "ncpus": ncpus,
@@ -277,9 +405,9 @@ def write_run_manifest_json(result: dict[str, object], run_manifest_json: Path) 
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a GAMESS input file through rungms.bat.")
+    parser = argparse.ArgumentParser(description="Run a GAMESS input file through rungms.")
     parser.add_argument("--input", required=True, type=Path, help="Path to a GAMESS input file.")
-    parser.add_argument("--gamess-dir", default=Path("C:/Users/Public/gamess-64"), type=Path)
+    parser.add_argument("--gamess-dir", type=Path)
     parser.add_argument("--version", default="2023.R1.intel")
     parser.add_argument("--ncpus", type=int, default=1)
     parser.add_argument("--log", type=Path, help="Path to a log file. Defaults to a per-run temporary directory.")
@@ -313,7 +441,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     input_path = resolve_from_repo(args.input).resolve()
-    gamess_dir = args.gamess_dir.resolve()
+    if args.gamess_dir:
+        gamess_dir = args.gamess_dir.resolve()
+    elif os.name == "nt":
+        gamess_dir = Path("C:/Users/Public/gamess-64").resolve()
+    else:
+        raise ValueError("--gamess-dir is required when running run_gamess.py directly outside Windows.")
     run_workspace = Path(tempfile.mkdtemp(prefix=f"{input_path.stem}_", suffix="_gamess"))
     log_path = resolve_from_repo(args.log).resolve() if args.log else run_workspace / f"{input_path.stem}.log"
     run_manifest_json = (

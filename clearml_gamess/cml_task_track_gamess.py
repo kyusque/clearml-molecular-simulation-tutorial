@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import time
 import tempfile
@@ -26,6 +27,8 @@ GAMESS_STATUS_CODES = {
     "missing_log": 3,
     "unknown": 4,
 }
+GAMESS_TEMP_DIR_RE = re.compile(r"GAMESS temporary binary files will be written to\s+(.+?)\s*$")
+GAMESS_SUPPLEMENTARY_DIR_RE = re.compile(r"GAMESS supplementary output files will be written to\s+(.+?)\s*$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -116,6 +119,46 @@ def cleanup_matching_scratch_files(source_dir: Path, pattern: str) -> None:
     for source_path in source_dir.glob(pattern):
         if source_path.is_file():
             source_path.unlink(missing_ok=True)
+
+
+def parse_gamess_scratch_dirs(log_path: Path) -> list[Path]:
+    if not log_path.exists():
+        return []
+    scratch_dirs: list[Path] = []
+    seen: set[Path] = set()
+    log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    for line in log_text.splitlines():
+        for pattern in (GAMESS_TEMP_DIR_RE, GAMESS_SUPPLEMENTARY_DIR_RE):
+            match = pattern.search(line)
+            if not match:
+                continue
+            path_text = match.group(1).strip()
+            if not path_text:
+                continue
+            scratch_dir = Path(path_text).expanduser().resolve()
+            if scratch_dir not in seen:
+                seen.add(scratch_dir)
+                scratch_dirs.append(scratch_dir)
+    return scratch_dirs
+
+
+def resolve_scratch_source_dirs(run_data: dict[str, object], log_path: Path) -> list[Path]:
+    source_dirs: list[Path] = []
+    seen: set[Path] = set()
+
+    for scratch_dir in parse_gamess_scratch_dirs(log_path):
+        if scratch_dir.exists() and scratch_dir.is_dir() and scratch_dir not in seen:
+            seen.add(scratch_dir)
+            source_dirs.append(scratch_dir)
+
+    scratch_dir_value = run_data.get("scratch_dir")
+    if scratch_dir_value:
+        scratch_dir = Path(str(scratch_dir_value)).expanduser().resolve()
+        if scratch_dir.exists() and scratch_dir.is_dir() and scratch_dir not in seen:
+            seen.add(scratch_dir)
+            source_dirs.append(scratch_dir)
+
+    return source_dirs
 
 
 def get_required_artifact(task, name: str):
@@ -303,7 +346,6 @@ def main() -> None:
     elif not log_path.exists():
         log_path = Path(get_required_artifact(run_task, "gamess_log").get_local_copy()).resolve()
 
-    temp_dir_path = Path(str(run_data.get("scratch_dir", ""))).resolve() if run_data.get("scratch_dir") else None
     input_path = Path(str(run_data["input_path"]))
     temp_pattern = str(run_data.get("scratch_pattern") or f"{input_path.stem}.*")
 
@@ -337,9 +379,12 @@ def main() -> None:
     upload_text_configuration(task, "gamess_run_manifest_json_text", local_run_manifest)
     upload_text_artifact(task, "gamess_log", log_path, ".txt")
     upload_text_configuration(task, "gamess_log_text", log_path)
-    if temp_dir_path is not None and temp_dir_path.exists() and upload_scratch_artifact and tail_result in {"normal_termination", "abnormal_termination"}:
+    scratch_source_dirs = resolve_scratch_source_dirs(run_data, log_path)
+    if upload_scratch_artifact and tail_result in {"normal_termination", "abnormal_termination"}:
         scratch_copy_dir = track_workspace / "gamess_temp"
-        copied_scratch = collect_matching_scratch_files(temp_dir_path, temp_pattern, scratch_copy_dir)
+        copied_scratch: list[Path] = []
+        for scratch_source_dir in scratch_source_dirs:
+            copied_scratch.extend(collect_matching_scratch_files(scratch_source_dir, temp_pattern, scratch_copy_dir))
         if copied_scratch:
             upload_directory_artifact(task, "gamess_temp", scratch_copy_dir)
 
@@ -365,12 +410,12 @@ def main() -> None:
         upload_text_configuration(task, "gamess_energy_text", energy_text)
 
     if values["gamess_status"] != "completed":
-        if temp_dir_path is not None and temp_dir_path.exists():
-            cleanup_matching_scratch_files(temp_dir_path, temp_pattern)
+        for scratch_source_dir in scratch_source_dirs:
+            cleanup_matching_scratch_files(scratch_source_dir, temp_pattern)
         raise RuntimeError(f"GAMESS status is {values['gamess_status']}")
 
-    if temp_dir_path is not None and temp_dir_path.exists():
-        cleanup_matching_scratch_files(temp_dir_path, temp_pattern)
+    for scratch_source_dir in scratch_source_dirs:
+        cleanup_matching_scratch_files(scratch_source_dir, temp_pattern)
 
     task.close()
 

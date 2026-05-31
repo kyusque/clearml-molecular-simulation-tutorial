@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TASK_PACKAGES = ["clearml>=2.1.7", "impi-devel>=2021.18.0"]
+TASK_PACKAGES = [
+    "clearml>=2.1.7",
+    'impi-devel>=2021.18.0; (platform_system == "Linux" and platform_machine == "x86_64") or (platform_system == "Windows" and platform_machine == "AMD64")',
+]
+TASK_DIFF_PATHS = [
+    "pyproject.toml",
+    "clearml_gamess/*.py",
+    "clearml_gamess/examples/*.py",
+    "clearml_gamess/examples/gamess_test_cases/*.py",
+    "tools/*.py",
+]
 
 
 def path_arg(path: Path | None) -> str | None:
@@ -17,6 +28,47 @@ def resolve_from_repo(path: Path) -> Path:
     if path.is_absolute():
         return path
     return REPO_ROOT / path
+
+
+def git_output(*args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            text=True,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    value = completed.stdout.strip()
+    return value or None
+
+
+def resolve_source_repository(args: argparse.Namespace) -> str:
+    source_repository = getattr(args, "source_repository", None) or os.environ.get("CLEARML_TASK_REPOSITORY")
+    if source_repository == "origin":
+        return git_output("config", "--get", "remote.origin.url") or REPO_ROOT.as_posix()
+    return source_repository or REPO_ROOT.as_posix()
+
+
+def resolve_source_branch(args: argparse.Namespace) -> str:
+    return getattr(args, "source_branch", None) or os.environ.get("CLEARML_TASK_BRANCH") or git_output("branch", "--show-current") or ""
+
+
+def resolve_source_commit(args: argparse.Namespace) -> str:
+    return getattr(args, "source_commit", None) or os.environ.get("CLEARML_TASK_COMMIT") or git_output("rev-parse", "HEAD") or ""
+
+
+def resolve_source_diff(args: argparse.Namespace) -> str | None:
+    source_diff = getattr(args, "source_diff", None) or os.environ.get("CLEARML_TASK_DIFF")
+    if source_diff is not None:
+        return None if source_diff.lower() in {"", "none", "false", "0"} else source_diff
+    return git_output("diff", "--binary", "HEAD", "--", *TASK_DIFF_PATHS)
 
 
 def upload_text_artifact(task, name: str, path: Path, extension_name: str) -> None:
@@ -35,10 +87,12 @@ def make_run_argparse_args(args: argparse.Namespace) -> list[tuple[str, str]]:
         ("--project-name", args.project_name),
         ("--task-name", args.run_task_name),
         ("--input", args.input.as_posix()),
-        ("--gamess-dir", args.gamess_dir.as_posix()),
-        ("--version", args.version),
         ("--ncpus", str(args.ncpus)),
     ]
+    if args.version:
+        run_args.append(("--version", args.version))
+    if args.gamess_dir:
+        run_args.append(("--gamess-dir", args.gamess_dir.as_posix()))
     if args.log:
         run_args.append(("--log", args.log.as_posix()))
     if args.run_manifest_json:
@@ -63,11 +117,15 @@ def make_track_argparse_args(args: argparse.Namespace) -> list[tuple[str, str]]:
 def create_run_task(args: argparse.Namespace):
     from clearml import Task
 
+    source_repository = resolve_source_repository(args)
+    source_branch = resolve_source_branch(args)
+    source_commit = resolve_source_commit(args)
+    source_diff = resolve_source_diff(args)
     task = Task.create(
         project_name=args.project_name,
         task_name=args.run_task_name,
         task_type=Task.TaskTypes.data_processing,
-        repo=REPO_ROOT.as_posix(),
+        repo=source_repository,
         script="cml_task_run_gamess.py",
         working_directory="clearml_gamess",
         argparse_args=make_run_argparse_args(args),
@@ -75,9 +133,10 @@ def create_run_task(args: argparse.Namespace):
         add_task_init_call=False,
     )
     task.set_script(
-        repository=REPO_ROOT.as_posix(),
-        branch="",
-        commit="",
+        repository=source_repository,
+        branch=source_branch,
+        commit=source_commit,
+        diff=source_diff,
         working_dir="clearml_gamess",
         entry_point="cml_task_run_gamess.py",
     )
@@ -88,11 +147,15 @@ def create_run_task(args: argparse.Namespace):
 def create_track_task(args: argparse.Namespace):
     from clearml import Task
 
+    source_repository = resolve_source_repository(args)
+    source_branch = resolve_source_branch(args)
+    source_commit = resolve_source_commit(args)
+    source_diff = resolve_source_diff(args)
     task = Task.create(
         project_name=args.project_name,
         task_name=args.track_task_name,
         task_type=Task.TaskTypes.data_processing,
-        repo=REPO_ROOT.as_posix(),
+        repo=source_repository,
         script="cml_task_track_gamess.py",
         working_directory="clearml_gamess",
         argparse_args=make_track_argparse_args(args),
@@ -100,9 +163,10 @@ def create_track_task(args: argparse.Namespace):
         add_task_init_call=False,
     )
     task.set_script(
-        repository=REPO_ROOT.as_posix(),
-        branch="",
-        commit="",
+        repository=source_repository,
+        branch=source_branch,
+        commit=source_commit,
+        diff=source_diff,
         working_dir="clearml_gamess",
         entry_point="cml_task_track_gamess.py",
     )
@@ -111,6 +175,11 @@ def create_track_task(args: argparse.Namespace):
 
 def build_pipeline(args: argparse.Namespace):
     from clearml import PipelineController
+
+    args.source_repository = resolve_source_repository(args)
+    args.source_branch = resolve_source_branch(args)
+    args.source_commit = resolve_source_commit(args)
+    args.source_diff = resolve_source_diff(args)
 
     clearml_config_file = os.environ.get("CLEARML_CONFIG_FILE")
     if not clearml_config_file:
@@ -127,10 +196,12 @@ def build_pipeline(args: argparse.Namespace):
         packages=TASK_PACKAGES,
     )
     if getattr(args, "controller_entry_point", None):
+        source_repository = resolve_source_repository(args)
         pipe.task.set_script(
-            repository=REPO_ROOT.as_posix(),
-            branch="",
-            commit="",
+            repository=source_repository,
+            branch=resolve_source_branch(args),
+            commit=resolve_source_commit(args),
+            diff=resolve_source_diff(args),
             working_dir=args.controller_working_dir or ".",
             entry_point=args.controller_entry_point,
         )
@@ -143,6 +214,7 @@ def build_pipeline(args: argparse.Namespace):
         monitor_artifacts=[
             ("gamess_input", "pipeline_gamess_input"),
             ("gamess_run_manifest", "run_gamess_manifest"),
+            ("gamess_rungms", "run_gamess_rungms"),
         ],
         clone_base_task=True,
     )
@@ -171,13 +243,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pipeline-version", default="0.1.0")
     parser.add_argument("--run-task-name")
     parser.add_argument("--track-task-name")
+    parser.add_argument("--source-repository")
+    parser.add_argument("--source-branch")
+    parser.add_argument("--source-commit")
     parser.add_argument("--controller-entry-point")
     parser.add_argument("--controller-working-dir")
     parser.add_argument("--default-queue", default="services")
     parser.add_argument("--worker-queue")
     parser.add_argument("--input", required=True, type=Path)
-    parser.add_argument("--gamess-dir", default=Path("C:/Users/Public/gamess-64"), type=Path)
-    parser.add_argument("--version", default="2023.R1.intel")
+    parser.add_argument("--gamess-dir", type=Path)
+    parser.add_argument("--version")
     parser.add_argument("--ncpus", type=int, default=1)
     parser.add_argument("--log", type=Path)
     parser.add_argument("--run-manifest-json", type=Path)
