@@ -9,7 +9,7 @@
 - `cml_task_run_gamess.py`: Task definition used by the pipeline `run_gamess` step (executed on ClearML Agent)
 - `cml_task_track_gamess.py`: Task definition used by the pipeline `track_gamess` step (executed on ClearML Agent)
 - `cml_pipeline_gamess.py`: ClearML Pipeline definition with `run_gamess` and `track_gamess` steps
-- `examples/`: `.inp` files and matching `<input-file-name-without-ext>.cml.py` submit examples
+- `examples/`: `.inp` files and matching `<input-file-name-without-ext>.cml.py` ClearML task submission examples
 
 `CLEARML_CONFIG_FILE` must be set before calling `build_pipeline()`. If it is missing, pipeline construction fails immediately.
 
@@ -21,13 +21,17 @@ The submit side resolves `repository`, `branch`, `commit`, and the uncommitted d
 
 If a Task is created on Windows and executed by a macOS Agent, the Windows path `C:/Users/...` is not visible from macOS. In that case, explicitly pass the local repository path on the macOS machine, a shared filesystem path, or a Git remote. `cml_pipeline_gamess.py` passes `git diff --binary HEAD` for the Python code needed at runtime, so the Agent can apply uncommitted changes as long as it can clone the base commit. Stage new files with `git add` before submitting.
 
-Git matters most for people editing Python code that runs on the Agent: artifact upload callbacks, text previews, scratch collection, metrics extraction, and the JSON handoff between run and track tasks. A commit is not required for every iteration. If the Agent can clone the base commit and the intended change is included in the ClearML Task source diff, the Agent can apply that local diff remotely. New files may need `git add` before they appear in the diff.
+Git matters most for people editing Python code that runs on the Agent: artifact registration, text previews, scratch collection, metrics extraction, and the JSON handoff between run and track tasks. A commit is not required for every iteration. If the Agent can clone the base commit and the intended change is included in the ClearML Task source diff, the Agent can apply that local diff remotely. New files may need `git add` before they appear in the diff.
 
-For users who only want to adjust a GAMESS input and submit another calculation, Git should not be the main workflow. Edit the `.inp` and `.cml.py`, create a new Pipeline, and let the submit script upload the input as the `pipeline_input` artifact. ClearML's best-practice idea of keeping uncommitted changes for later forensics is useful here mainly for wrapper and callback development, not as a requirement for ordinary input-file edits.
+For users who only want to adjust a GAMESS input and submit another calculation, Git should not be the main workflow. Edit the `.inp` and `.cml.py`, create a new Pipeline, and let the ClearML task submission script upload the input as the `pipeline_input` artifact. ClearML's best-practice idea of keeping uncommitted changes for later forensics is useful here mainly for task execution code and callbacks, not as a requirement for ordinary input-file edits.
 
 ## GAMESS Installation
 
 This repository does not include GAMESS itself. Install GAMESS on the machine where the ClearML Agent runs.
+
+This tutorial mainly assumes the Windows GAMESS distribution. On Windows, the default layout is `C:/Users/Public/gamess-64` containing `rungms.bat` and `gamess.<version>.exe`.
+
+On macOS/Linux, build GAMESS from source and make sure `rungms` is usable. This code does not document the GAMESS build itself. On the Agent side, it tracks the `rungms` path and treats its parent directory as the GAMESS directory.
 
 When `GAMESS_DIR` is not set, `cml_task_run_gamess.py` resolves the GAMESS location. On Windows, it uses `C:/Users/Public/gamess-64`. On macOS/Linux, it looks for `rungms` on `PATH` and treats its parent directory as the GAMESS directory.
 
@@ -35,20 +39,20 @@ If `rungms` is not on `PATH` on macOS/Linux, set `CLEARML_GAMESS_DIR` or `GAMESS
 
 When the Agent is started with this repository's `tools/start_clearml_agent.py`, the helper looks for `rungms` at startup and passes the detected directory to the Agent process as `CLEARML_GAMESS_DIR`. If `CLEARML_GAMESS_VERSION` is not set, it also infers a version from `gamess.*.x` or `gamess.*.exe` in the GAMESS directory.
 
-On macOS/Linux, `rungms` usually receives an input name without the `.inp` extension and reads that input from the current working directory. This wrapper therefore does not copy inputs into the GAMESS installation directory. It copies the input file into the agent-side per-run temporary workspace, runs `rungms <stem>` from that workspace, and passes the GAMESS installation directory through `GMSPATH` and `GAMESS_DIR` for helper-file lookup.
+On macOS/Linux, `rungms` usually receives an input name without the `.inp` extension and reads that input from the current working directory. This code therefore does not copy inputs into the GAMESS installation directory. It copies the input file into the agent-side per-run temporary workspace, runs `rungms <stem>` from that workspace, and passes the GAMESS installation directory through `GMSPATH` and `GAMESS_DIR` for helper-file lookup.
 
-Some `rungms` scripts use GNU-style `readlink -f`. macOS' built-in `readlink` does not support `-f`, so this wrapper creates a small compatibility shim in the per-run workspace and prepends it to `PATH` before launching `rungms`. If the Agent environment already has `GMSPATH`, the task-side GAMESS directory resolution takes precedence.
+Some `rungms` scripts use GNU-style `readlink -f`. macOS' built-in `readlink` does not support `-f`, so this code creates a small compatibility shim in the per-run workspace and prepends it to `PATH` before launching `rungms`. If the Agent environment already has `GMSPATH`, the task-side GAMESS directory resolution takes precedence.
 
-If the `rungms` script has a hard-coded `GMSPATH`, the wrapper does not edit the GAMESS installation in place. It copies `rungms` into the per-run workspace and patches only that temporary copy to point at the task-resolved GAMESS directory.
+If the `rungms` script has a hard-coded `GMSPATH`, this code does not edit the GAMESS installation in place. It copies `rungms` into the per-run workspace and patches only that temporary copy to point at the task-resolved GAMESS directory.
 
-On Windows, the wrapper expects at least these files under that directory:
+On Windows, the code expects at least these files under that directory:
 
 - `rungms.bat`
 - `gamess.<version>.exe`
 
 The default Windows configuration uses `version="2023.R1.intel"` and looks for `C:/Users/Public/gamess-64/gamess.2023.R1.intel.exe`. On macOS/Linux, if no version is specified, the wrapper infers one from `gamess.*.x` in the GAMESS directory. To use another version, set `CLEARML_GAMESS_VERSION` or `GAMESS_VERSION` in the Agent environment.
 
-The Python environment includes `impi-devel` on Windows and Linux x86_64. In this wrapper, Intel MPI runtime libraries required by GAMESS are expected to come from the Python environment through `impi-devel` / `impi-rt`. `run_gamess.py` adds the virtual environment's `Library/bin` directory to `PATH` before launching GAMESS so the MPI DLLs are visible.
+The Python environment includes `impi-devel` on Windows and Linux x86_64. In this code, Intel MPI runtime libraries required by GAMESS are expected to come from the Python environment through `impi-devel` / `impi-rt`. `run_gamess.py` adds the virtual environment's `Library/bin` directory to `PATH` before launching GAMESS so the MPI DLLs are visible.
 
 If you copy the GAMESS installation directory elsewhere and run from that copy, the required Intel MPI runtime still has to be visible on `PATH`. Windows/Linux x86_64 can use `impi-devel`, but macOS arm64 cannot install `impi-devel` from pip, so the ClearML Task requirements exclude it with platform markers. `impi-devel` does not replace the GAMESS installation, but in this Windows tutorial it is treated as a runtime dependency for launching GAMESS.
 
@@ -92,7 +96,7 @@ At this point the GAMESS calculation is not finished, so the manifest does not c
 - writes the result to `tracking_metrics` and registers it as an artifact
 - registers `gamess_log` as a text-preview artifact
 - optionally reads the GAMESS log to locate scratch/restart directories and registers matching files as `gamess_temp`
-- runs optional postprocessing callbacks such as energy extraction
+- runs optional callbacks, such as energy extraction, inside the tracking loop
 - fails its ClearML Task after saving artifacts when GAMESS failed
 
 Monitored artifacts aggregated on the Pipeline Task are namespaced per task (for example `pipeline_input`, `pipeline_input_patch`, `run_gamess_input`, `run_gamess_manifest`, `run_gamess_rungms`, `track_gamess_metrics`, `track_gamess_log`, `track_gamess_temp`).
@@ -130,6 +134,6 @@ examples/
     success_fast_water.cml.py
 ```
 
-The `.cml.py` file is the user-edited submit script. It should contain only execution conditions such as project name, queue, GAMESS input, optional GAMESS install directory, version, and CPU count.
+The `.cml.py` file is the user-edited ClearML task submission script. It should contain only execution conditions such as project name, queue, GAMESS input, optional GAMESS install directory, version, and CPU count.
 
 Generated paths such as logs, run manifest JSON, metrics JSON, and scratch/temp directories should not be hard-coded by users. `cml_task_run_gamess.py` and `cml_task_track_gamess.py` create per-execution temporary directories after the queued Tasks are executed by the Agent.

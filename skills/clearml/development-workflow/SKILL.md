@@ -25,7 +25,7 @@ Use this skill when iterating on ClearML Agent tasks from a local repository.
 
 ## Submitting Pipelines
 
-- A submit example launched with `uv run python <case>.cml.py` may stay in the foreground while the local PipelineController watches the pipeline.
+- A submit example launched with `uv run <case>.cml.py` may stay in the foreground while the local PipelineController watches the pipeline. Prefer direct script execution so uv reads the PEP 723 inline dependencies from the `.cml.py` file.
 - For test batches, start each submit example independently in the background, then inspect ClearML task state by task name or task id.
 - On Windows, prefer:
 
@@ -34,7 +34,7 @@ $stdout = "local/logs/submit_case.out.log"
 $stderr = "local/logs/submit_case.err.log"
 Start-Process `
   -FilePath "uv" `
-  -ArgumentList @("run", "python", "clearml_gamess/examples/case.cml.py") `
+  -ArgumentList @("run", "clearml_gamess/examples/case.cml.py") `
   -WorkingDirectory (Resolve-Path .).Path `
   -WindowStyle Hidden `
   -RedirectStandardOutput $stdout `

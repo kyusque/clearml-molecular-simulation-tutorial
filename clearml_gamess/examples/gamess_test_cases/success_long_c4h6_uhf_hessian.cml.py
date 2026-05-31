@@ -1,3 +1,11 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "clearml>=2.1.7",
+#   'impi-devel>=2021.18.0; (platform_system == "Linux" and platform_machine == "x86_64") or (platform_system == "Windows" and platform_machine == "AMD64")',
+# ]
+# ///
+
 from __future__ import annotations
 
 import argparse

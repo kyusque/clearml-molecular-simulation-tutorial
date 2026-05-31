@@ -1,3 +1,10 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "clearml-agent>=3.0.2",
+# ]
+# ///
+
 from __future__ import annotations
 
 import argparse
