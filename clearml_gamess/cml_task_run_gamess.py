@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -29,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project-name", default="clearml-gamess-tutorial")
     parser.add_argument("--task-name", default="cml_task_run_gamess")
     parser.add_argument("--input", type=Path)
+    parser.add_argument("--input-patch", type=Path)
     parser.add_argument("--gamess-dir", type=Path)
     parser.add_argument("--version")
     parser.add_argument("--ncpus", type=int)
@@ -156,21 +158,102 @@ def upload_text_artifact(task, name: str, path: Path, extension_name: str) -> No
     )
 
 
-def resolve_input_path(task, input_arg: Path, run_workspace: Path) -> Path:
-    input_path = resolve_from_repo(input_arg).resolve()
-    if input_path.exists():
-        return input_path
-
-    artifact = task.artifacts.get("gamess_input")
+def get_optional_artifact_path(task, name: str) -> Path | None:
+    artifact = task.artifacts.get(name)
     if artifact is None:
+        return None
+    return Path(artifact.get_local_copy()).resolve()
+
+
+def restore_artifact_or_local_path(task, path_arg: Path, artifact_name: str, run_workspace: Path) -> Path:
+    local_path = resolve_from_repo(path_arg).resolve()
+    if local_path.exists():
+        return local_path
+
+    artifact_path = get_optional_artifact_path(task, artifact_name)
+    if artifact_path is None:
         raise FileNotFoundError(
-            f"GAMESS input was not found and gamess_input artifact is missing: {input_path.as_posix()}"
+            f"Required input was not found and {artifact_name} artifact is missing: {local_path.as_posix()}"
         )
 
-    artifact_path = Path(artifact.get_local_copy()).resolve()
-    restored_input = run_workspace / input_arg.name
-    shutil.copy2(artifact_path, restored_input)
-    return restored_input
+    restored_path = run_workspace / path_arg
+    restored_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(artifact_path, restored_path)
+    return restored_path
+
+
+def resolve_patch_path(task, patch_arg: Path | None, params: dict[str, str], run_workspace: Path) -> Path | None:
+    if patch_arg is not None:
+        return restore_artifact_or_local_path(task, patch_arg, "pipeline_input_patch", run_workspace)
+
+    param_value = params.get("Args/--input-patch")
+    if param_value:
+        return restore_artifact_or_local_path(task, Path(param_value), "pipeline_input_patch", run_workspace)
+
+    artifact_path = get_optional_artifact_path(task, "pipeline_input_patch")
+    if artifact_path is not None:
+        restored_path = run_workspace / artifact_path.name
+        shutil.copy2(artifact_path, restored_path)
+        return restored_path
+    return None
+
+
+def apply_input_patch(base_input: Path, input_arg: Path, patch_path: Path, run_workspace: Path) -> Path:
+    patched_root = run_workspace / "patched_input"
+    relative_input = input_arg if not input_arg.is_absolute() else Path(input_arg.name)
+    staged_input = patched_root / relative_input
+    staged_input.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(base_input, staged_input)
+
+    basename_input = patched_root / input_arg.name
+    if basename_input != staged_input:
+        basename_input.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(base_input, basename_input)
+
+    completed = subprocess.run(
+        ["git", "apply", "--whitespace=nowarn", "--recount", str(patch_path)],
+        cwd=patched_root,
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Failed to apply pipeline_input_patch to pipeline_input.\n"
+            f"patch={patch_path.as_posix()}\n"
+            f"stdout={completed.stdout}\n"
+            f"stderr={completed.stderr}"
+        )
+
+    base_bytes = base_input.read_bytes()
+    if staged_input.exists() and staged_input.read_bytes() != base_bytes:
+        return staged_input.resolve()
+    if basename_input.exists():
+        return basename_input.resolve()
+    if staged_input.exists():
+        return staged_input.resolve()
+    raise FileNotFoundError(
+        "pipeline_input_patch applied, but the patched input file could not be found. "
+        f"Expected {staged_input.as_posix()} or {basename_input.as_posix()}."
+    )
+
+
+def resolve_input_path(task, input_arg: Path, input_patch_arg: Path | None, params: dict[str, str], run_workspace: Path) -> Path:
+    pipeline_input_artifact = get_optional_artifact_path(task, "pipeline_input")
+    if pipeline_input_artifact is not None:
+        input_path = run_workspace / input_arg
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(pipeline_input_artifact, input_path)
+        input_path = input_path.resolve()
+    else:
+        input_path = restore_artifact_or_local_path(task, input_arg, "pipeline_input", run_workspace)
+
+    patch_path = resolve_patch_path(task, input_patch_arg, params, run_workspace)
+    if patch_path is None:
+        return input_path
+    return apply_input_patch(input_path, input_arg, patch_path, run_workspace)
 
 
 def main() -> None:
@@ -190,7 +273,8 @@ def main() -> None:
 
     ncpus = get_task_int_arg(args, params, "ncpus")
     run_workspace = Path(tempfile.mkdtemp(prefix=f"{input_arg.stem}_", suffix="_gamess"))
-    input_path = resolve_input_path(task, input_arg, run_workspace)
+    input_patch_arg = get_task_path_arg(args, params, "input-patch")
+    input_path = resolve_input_path(task, input_arg, input_patch_arg, params, run_workspace)
     gamess_dir = resolve_task_gamess_dir(get_task_path_arg(args, params, "gamess-dir"))
     version = resolve_task_gamess_version(get_task_str_arg(args, params, "version"), gamess_dir)
     log_arg = get_task_path_arg(args, params, "log")
@@ -209,6 +293,7 @@ def main() -> None:
     task.connect(
         {
             "input": input_path.as_posix(),
+            "input_patch": input_patch_arg.as_posix() if input_patch_arg else None,
             "gamess_dir": gamess_dir.as_posix(),
             "version": version,
             "ncpus": ncpus,
@@ -239,6 +324,7 @@ def main() -> None:
     return_code = int(result["return_code"])
     logger.report_scalar("process", "return_code", return_code, iteration=0)
 
+    upload_text_artifact(task, "gamess_input", input_path, ".txt")
     upload_text_artifact(task, "gamess_run_manifest", run_manifest_json, ".json")
     rungms_path = Path(str(result.get("rungms_path", "")))
     if rungms_path.exists():

@@ -93,6 +93,8 @@ def make_run_argparse_args(args: argparse.Namespace) -> list[tuple[str, str]]:
         run_args.append(("--version", args.version))
     if args.gamess_dir:
         run_args.append(("--gamess-dir", args.gamess_dir.as_posix()))
+    if getattr(args, "input_patch", None):
+        run_args.append(("--input-patch", args.input_patch.as_posix()))
     if args.log:
         run_args.append(("--log", args.log.as_posix()))
     if args.run_manifest_json:
@@ -140,7 +142,9 @@ def create_run_task(args: argparse.Namespace):
         working_dir="clearml_gamess",
         entry_point="cml_task_run_gamess.py",
     )
-    upload_text_artifact(task, "gamess_input", resolve_from_repo(args.input), ".txt")
+    upload_text_artifact(task, "pipeline_input", resolve_from_repo(args.input), ".txt")
+    if getattr(args, "input_patch", None):
+        upload_text_artifact(task, "pipeline_input_patch", resolve_from_repo(args.input_patch), ".patch")
     return task
 
 
@@ -211,11 +215,15 @@ def build_pipeline(args: argparse.Namespace):
         name="run_gamess",
         base_task_factory=lambda _node: create_run_task(args),
         execution_queue=args.worker_queue,
-        monitor_artifacts=[
-            ("gamess_input", "pipeline_gamess_input"),
-            ("gamess_run_manifest", "run_gamess_manifest"),
-            ("gamess_rungms", "run_gamess_rungms"),
-        ],
+        monitor_artifacts=(
+            [
+                ("pipeline_input", "pipeline_input"),
+                ("gamess_input", "run_gamess_input"),
+                ("gamess_run_manifest", "run_gamess_manifest"),
+                ("gamess_rungms", "run_gamess_rungms"),
+            ]
+            + ([("pipeline_input_patch", "pipeline_input_patch")] if getattr(args, "input_patch", None) else [])
+        ),
         clone_base_task=True,
     )
     pipe.add_step(
@@ -251,6 +259,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--default-queue", default="services")
     parser.add_argument("--worker-queue")
     parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--input-patch", type=Path)
     parser.add_argument("--gamess-dir", type=Path)
     parser.add_argument("--version")
     parser.add_argument("--ncpus", type=int, default=1)

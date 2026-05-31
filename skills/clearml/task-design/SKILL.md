@@ -9,8 +9,9 @@ Use this skill when a ClearML task runs an external executable rather than pure 
 
 ## Task Design
 
-- Treat the simulator input file as task data, not only as a local path. Before enqueueing a task, upload the input as an artifact such as `gamess_input`.
-- In the agent-side task script, resolve the requested input path first. If it is missing, download `task.artifacts["gamess_input"].get_local_copy()` and run from that copy.
+- Treat the simulator input file as task data, not only as a local path. Before enqueueing a task, upload the base input as a pipeline-level artifact such as `pipeline_input`.
+- In the agent-side task script, resolve the requested input path first. If it is missing, download `task.artifacts["pipeline_input"].get_local_copy()` and run from that copy.
+- If `pipeline_input_patch` exists, apply it on the agent side before launching the simulator. Upload the materialized final input as the software-specific artifact, for example `gamess_input`.
 - Do not require users to hard-code output paths such as log, run manifest JSON, metrics JSON, or scratch/temp directories in submit examples. Let the agent-side task create a per-run workspace with `tempfile.mkdtemp()`.
 - Keep user-facing submit scripts concrete only for the scientific inputs: project name, queue, input file, software directory/version, CPU count. Generated outputs belong to the simulator execution entry point such as `cml_task_run_gamess.py`.
 - Resolve machine-local executables and wrapper scripts in the agent-side execution entry point, not in the submit script or pure runner helper. For example, `cml_task_run_gamess.py` may decide that Windows should use `C:/Users/Public/gamess-64` while macOS/Linux should look for `rungms` on `PATH`; `run_gamess.py` should then receive an explicit directory and only execute what it was given.
@@ -43,7 +44,7 @@ Use this skill when a ClearML task runs an external executable rather than pure 
 - If the simulator wrapper exits during the startup window without a normal completion marker, treat that as a failed submission even when the wrapper process returns zero. Wrapper scripts can print fatal messages such as incompatible executable architecture while still exiting cleanly.
 - `cml_task_track_<software>.py` should start from the run manifest, then resolve the referenced live log path or completed log artifact depending on the mode. If the manifest is missing, report that `cml_task_run_<software>.py` is still queued/running or failed before producing the manifest.
 - In submit-only + track-tail mode, do not silently fall back to copied log artifacts. If the manifest log path is not visible/readable from tracking, fail fast so the pipeline fails clearly.
-- Treat `gamess_input` differently from generated outputs: upload input before enqueueing so the agent can start. Generated artifacts such as run manifests, logs, metrics, and scratch/temp archives can only be uploaded by the agent-side entry points after they exist.
+- Treat `pipeline_input` and `pipeline_input_patch` differently from generated outputs: upload them before enqueueing so the agent can start. Generated artifacts such as final `gamess_input`, run manifests, logs, metrics, and scratch/temp archives can only be uploaded by the agent-side entry points after they exist.
 
 ## Artifacts And Scratch Files
 
@@ -63,7 +64,8 @@ Keep a small set of `.inp` files that exercise task state transitions:
 
 For task/pipeline validation, check both layers:
 
-- `cml_task_run_gamess.py` input artifact: `gamess_input`, uploaded before enqueueing.
+- `cml_task_run_gamess.py` pipeline input artifacts: `pipeline_input` and optional `pipeline_input_patch`, uploaded before enqueueing.
+- `cml_task_run_gamess.py` materialized simulator input artifact: `gamess_input`, uploaded after optional patch application on the agent.
 - `cml_task_run_gamess.py` generated artifact after agent execution starts: `gamess_run_manifest` as the downstream handoff JSON.
 - `cml_task_run_gamess.py` generated wrapper artifact: `gamess_rungms`, the exact launched `rungms` or `rungms.bat`.
 - `cml_task_track_gamess.py` artifacts: copied/observed `gamess_run_manifest`, `gamess_log`, `tracking_metrics`, optional `gamess_temp`, and callback outputs such as `gamess_energy`.
@@ -94,7 +96,7 @@ For task/run inspection workflows (task state triage, console-log validation, ma
 
 - Queue missing: enqueue fails with `Could not find queue named ...`; use an existing queue or start the agent with `--create-queue`.
 - Agent clone failure: repository is `ssh://...` and the worker lacks credentials; use HTTPS/token/SSH setup, commit/push, or local repo path only for same-machine debugging.
-- Agent cannot find input: the submit script passed a local path but no input artifact was uploaded. Upload `gamess_input` before enqueueing and implement artifact fallback.
+- Agent cannot find input: the submit script passed a local path but no input artifact was uploaded. Upload `pipeline_input` before enqueueing and implement artifact fallback.
 - Live log path not visible from tracking: in submit-only + tail mode, this should be treated as configuration error and failed explicitly so parent pipeline/task states are correct.
 - Run entry point fails before tracking: upload the run manifest and any startup log first, then fail the task with return code, submission status, log path, and a concise startup log tail.
 - CLI args not visible in remote execution: read `task.get_parameters()` keys like `Args/--input` as a fallback.

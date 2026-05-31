@@ -18,7 +18,7 @@ Recommended inspect order for flaky runs:
 3. Read the run manifest and compare its `live_log_path` or `log_path` with what the tracking step actually opened.
 4. Read both task console outputs to confirm whether tailing started, timed out, or failed fast on path visibility.
 5. Confirm final task states for the two step tasks and the pipeline controller match expectations.
-6. Verify pipeline-level monitored artifacts are task-scoped (for example `pipeline_gamess_input`, `run_gamess_manifest`, `track_gamess_metrics`, `track_gamess_log`, `track_gamess_temp`).
+6. Verify pipeline-level monitored artifacts are task-scoped (for example `pipeline_input`, `pipeline_input_patch`, `run_gamess_input`, `run_gamess_manifest`, `track_gamess_metrics`, `track_gamess_log`, `track_gamess_temp`).
 
 ```python
 from clearml import Task

@@ -69,6 +69,7 @@ def main() -> None:
         default_queue=DEFAULT_QUEUE,
         worker_queue=WORKER_QUEUE,
         input=INPUT,
+        input_patch=None,
         gamess_dir=GAMESS_DIR,
         version=GAMESS_VERSION,
         ncpus=NCPUS,

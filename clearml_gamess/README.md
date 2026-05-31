@@ -52,7 +52,9 @@ If you copy the GAMESS installation directory elsewhere and run from that copy, 
 
 `cml_task_run_gamess.py`:
 
-- receives `gamess_input`; if the local path is unavailable, it downloads the artifact
+- receives `pipeline_input`; if the local path is unavailable, it downloads the artifact
+- applies `pipeline_input_patch` on the Agent when that artifact is present
+- registers the exact input passed to GAMESS as `gamess_input`
 - creates a temporary directory dedicated to that execution
 - submits GAMESS and checks only immediate startup failures
 - registers `gamess_run_manifest` as the handoff artifact for `cml_task_track_gamess.py`
@@ -85,7 +87,7 @@ At this point the GAMESS calculation is not finished, so the manifest does not c
 - runs optional postprocessing callbacks such as energy extraction
 - fails its ClearML Task after saving artifacts when GAMESS failed
 
-Monitored artifacts aggregated on the Pipeline Task are namespaced per task (for example `pipeline_gamess_input`, `run_gamess_manifest`, `run_gamess_rungms`, `track_gamess_metrics`, `track_gamess_log`, `track_gamess_temp`).
+Monitored artifacts aggregated on the Pipeline Task are namespaced per task (for example `pipeline_input`, `pipeline_input_patch`, `run_gamess_input`, `run_gamess_manifest`, `run_gamess_rungms`, `track_gamess_metrics`, `track_gamess_log`, `track_gamess_temp`).
 
 Termination markers:
 
