@@ -10,7 +10,8 @@ Use this skill when deciding what to upload to ClearML and how to name or struct
 ## Artifact Boundaries
 
 - Treat pipeline inputs differently from generated outputs. Upload base input artifacts such as `pipeline_input` before enqueueing so the agent can start without relying on the submitter's local path.
-- If the workflow supports patching a file input, upload the patch as `pipeline_input_patch` and let the agent-side run entry point materialize the final simulator input. Then upload that final materialized input as a software-specific artifact such as `gamess_input`.
+- If the workflow supports patching a file input, upload the patch as `pipeline_input_patch` and let the agent-side run entry point materialize the final simulator input. Use a standard unified diff format such as `git diff` / `git diff --no-index`, apply it with a normal patch tool such as `git apply`, then upload the final materialized input as a software-specific artifact such as `gamess_input`.
+- If the input file lives in the same code repository and its edits are intentionally part of the task source diff, ClearML's uncommitted script diff can also carry that input change. Prefer `pipeline_input` artifacts when the input comes from another repository, outside the code repository, or should be tracked independently from code.
 - Generated artifacts such as run manifests, logs, metrics, and scratch archives can only be uploaded by the agent-side entry points after they exist.
 - Use the run manifest artifact as a handoff contract between `cml_task_run_<software>.py` and `cml_task_track_<software>.py`. Do not mix ClearML bookkeeping such as artifact name maps into the manifest.
 - Keep provenance and tracking results separate:

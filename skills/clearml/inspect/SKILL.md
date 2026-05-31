@@ -124,3 +124,85 @@ assert run_status in {"failed", "completed"}
 assert track_status == "failed"
 assert pipe_status == "failed"
 ```
+
+## External Repository Integration Check
+
+Run this only when the task-wrapper repository boundary is in question, for example after changing source repository resolution, source diff handling, input artifact materialization, or documentation for external submit repositories. It is heavier than the normal water/success smoke test.
+
+What this check validates:
+
+- A submit script can live in an external repository.
+- The run/track worker Tasks still use the configured task-wrapper repository as their ClearML source code.
+- The external repository's input file is not cloned automatically; it is uploaded as `pipeline_input`.
+- The materialized simulator input appears as `gamess_input` on the run Task.
+- With `source_diff="none"` or `CLEARML_TASK_DIFF=false`, worker Tasks have `script.diff` length zero and run from the pinned GitHub commit.
+- The pipeline completes and produces normal run/track artifacts.
+- Manual clone behavior is not the goal of this check. A cloned run Task is expected to be a standalone debug task unless a fresh `pipeline_input` artifact is attached manually.
+
+Suggested setup:
+
+```text
+../clearml-gamess-external-input-test/
+  external_water.inp
+  external_water.cml.py
+```
+
+The external `external_water.cml.py` should import the local helper only to create the Pipeline, but set worker Task source fields to the GitHub task-wrapper repository:
+
+```python
+TASK_WRAPPER_REPOSITORY = "ssh://git@github.com/kyusque/clearml-gamess-tutorial.git"
+TASK_WRAPPER_COMMIT = "PINNED_COMMIT_HASH"
+
+args.source_repository = TASK_WRAPPER_REPOSITORY
+args.source_branch = "main"
+args.source_commit = TASK_WRAPPER_COMMIT
+args.source_diff = "none"
+args.input = Path("external_water.inp")
+```
+
+Before running, set `CLEARML_TASK_DIFF=false` if you want to ensure local uncommitted wrapper changes are not attached:
+
+```bash
+CLEARML_TASK_DIFF=false uv run external_water.cml.py
+```
+
+Inspect expected source-code boundaries:
+
+```python
+from clearml.backend_api.session.client import APIClient
+
+client = APIClient()
+pipe_id = "PIPELINE_TASK_ID"
+children = client.tasks.get_all(parent=pipe_id, order_by=["-last_update"], page_size=20)
+for child in children:
+    print(child.name)
+    print("repository:", child.script.repository)
+    print("commit:", child.script.version_num)
+    print("working_dir:", child.script.working_dir)
+    print("entry_point:", child.script.entry_point)
+    print("diff_len:", len(child.script.diff or ""))
+```
+
+Expected worker Task source metadata:
+
+- `repository` is the task-wrapper GitHub repository, not the external input repository.
+- `version_num` is the pinned task-wrapper commit.
+- `working_dir` is the wrapper package directory such as `clearml_gamess`.
+- `entry_point` is `cml_task_run_gamess.py` or `cml_task_track_gamess.py`.
+- `diff_len` is `0` when validating the pinned commit without local diffs.
+
+Inspect expected artifacts:
+
+```python
+from clearml import Task
+
+run_task = Task.get_task(task_id="RUN_TASK_ID")
+track_task = Task.get_task(task_id="TRACK_TASK_ID")
+
+print("run artifacts:", list(run_task.artifacts.keys()))
+print("track artifacts:", list(track_task.artifacts.keys()))
+```
+
+Expected run artifacts include `pipeline_input`, `gamess_input`, `gamess_run_manifest`, `gamess_log`, and `gamess_rungms`. Expected track artifacts include `tracking_metrics`, `gamess_log`, `gamess_run_manifest`, and optional `gamess_temp` / callback artifacts.
+
+If a manually cloned run Task fails with `pipeline_input artifact is missing`, confirm whether the clone copied artifacts. In normal operation, prefer creating a new Pipeline from the submit script so the input artifact is uploaded again and downstream tracking is wired to the new run Task ID.

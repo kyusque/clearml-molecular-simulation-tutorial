@@ -52,6 +52,10 @@ draft.md
 
 ## Quick Start
 
+Prepare a ClearML server first. The easiest starting point is the hosted ClearML server: create a workspace at `app.clear.ml`, generate API credentials, and put them in `local/clearml.conf`.
+
+Molecular simulation workflows can produce many input, log, scratch/restart, and auxiliary output files. The hosted server is convenient for a tutorial, but storage size and operations may become limiting in real use. For company-internal use with proprietary data or large calculation logs, plan on setting up a self-hosted ClearML server and/or external object storage. This repository does not yet document that setup, but a future version may add server configuration examples.
+
 Install dependencies:
 
 ```powershell
@@ -71,6 +75,12 @@ Submit the GAMESS sample pipeline:
 ```powershell
 uv run python clearml_gamess/examples/water_rhf_sto3g_opt.cml.py
 ```
+
+## Users and Developers
+
+If you only want to adjust an input file and run another calculation, Git should stay mostly in the background. Edit the `.inp` and `.cml.py`, create a new Pipeline, and the submit script will store the input as the `pipeline_input` artifact.
+
+Git becomes important when you are changing task-wrapper code that runs on the Agent: artifact upload callbacks, log previews, scratch collection, metrics extraction, and similar behavior. For that workflow, a commit is not required for every iteration. The important part is that the intended code change appears in the Task source diff. Stage new files with `git add` before submitting.
 
 ## Details
 

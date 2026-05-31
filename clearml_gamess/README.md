@@ -21,6 +21,10 @@ The submit side resolves `repository`, `branch`, `commit`, and the uncommitted d
 
 If a Task is created on Windows and executed by a macOS Agent, the Windows path `C:/Users/...` is not visible from macOS. In that case, explicitly pass the local repository path on the macOS machine, a shared filesystem path, or a Git remote. `cml_pipeline_gamess.py` passes `git diff --binary HEAD` for the Python code needed at runtime, so the Agent can apply uncommitted changes as long as it can clone the base commit. Stage new files with `git add` before submitting.
 
+Git matters most for people editing Python code that runs on the Agent: artifact upload callbacks, text previews, scratch collection, metrics extraction, and the JSON handoff between run and track tasks. A commit is not required for every iteration. If the Agent can clone the base commit and the intended change is included in the ClearML Task source diff, the Agent can apply that local diff remotely. New files may need `git add` before they appear in the diff.
+
+For users who only want to adjust a GAMESS input and submit another calculation, Git should not be the main workflow. Edit the `.inp` and `.cml.py`, create a new Pipeline, and let the submit script upload the input as the `pipeline_input` artifact. ClearML's best-practice idea of keeping uncommitted changes for later forensics is useful here mainly for wrapper and callback development, not as a requirement for ordinary input-file edits.
+
 ## GAMESS Installation
 
 This repository does not include GAMESS itself. Install GAMESS on the machine where the ClearML Agent runs.
@@ -59,6 +63,10 @@ If you copy the GAMESS installation directory elsewhere and run from that copy, 
 - submits GAMESS and checks only immediate startup failures
 - registers `gamess_run_manifest` as the handoff artifact for `cml_task_track_gamess.py`
 - registers the exact launched `rungms` or `rungms.bat` as `gamess_rungms`
+
+`pipeline_input_patch` is expected to be a unified diff, for example one produced by `git diff` or `git diff --no-index`. The agent-side task materializes `pipeline_input` in a temporary directory and applies the patch with `git apply`. If the input file lives in this repository and its edits are part of the same uncommitted repository diff, ClearML's script diff mechanism can also carry those changes. For inputs from another repository or outside any repository, passing `pipeline_input` and `pipeline_input_patch` as artifacts is more explicit and portable.
+
+Even when an external repository uses this Task wrapper, the run/track Task source code cloned by ClearML is the repository configured on those Tasks. Input files from the external repository are not cloned automatically; they are treated as `pipeline_input` artifacts.
 
 In submit-only mode, `gamess_run_manifest` is not the final result of GAMESS. It is the handoff contract that lets `cml_task_track_gamess.py` start tracking. It contains values such as:
 

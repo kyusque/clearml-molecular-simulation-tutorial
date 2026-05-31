@@ -65,6 +65,8 @@ def resolve_source_commit(args: argparse.Namespace) -> str:
 
 
 def resolve_source_diff(args: argparse.Namespace) -> str | None:
+    if getattr(args, "_source_diff_resolved", False):
+        return getattr(args, "source_diff", None)
     source_diff = getattr(args, "source_diff", None) or os.environ.get("CLEARML_TASK_DIFF")
     if source_diff is not None:
         return None if source_diff.lower() in {"", "none", "false", "0"} else source_diff
@@ -184,6 +186,7 @@ def build_pipeline(args: argparse.Namespace):
     args.source_branch = resolve_source_branch(args)
     args.source_commit = resolve_source_commit(args)
     args.source_diff = resolve_source_diff(args)
+    args._source_diff_resolved = True
 
     clearml_config_file = os.environ.get("CLEARML_CONFIG_FILE")
     if not clearml_config_file:

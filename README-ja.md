@@ -52,6 +52,10 @@ draft.md
 
 ## まず動かす
 
+まずClearML serverを用意します。最初は公式のClearML hosted serverを使うのが簡単です。`app.clear.ml`でworkspaceを作り、API credentialを発行して、`local/clearml.conf`に設定します。
+
+分子シミュレーションでは、入力、ログ、scratch/restart、補助出力などのファイルが増えやすく、公式serverだけでは容量や運用面がきつくなる可能性があります。企業内利用で自社データや大きな計算ログを扱うなら、頑張ってself-hosted ClearML serverや外部object storageを用意する方がよいはずです。このリポジトリではまだ自前serverの構築手順は扱っていませんが、そのうちserver設定例を追加するかもしれません。
+
 依存関係を入れます。
 
 ```powershell
@@ -71,6 +75,12 @@ GAMESSのサンプルPipelineを投入します。
 ```powershell
 uv run python clearml_gamess/examples/water_rhf_sto3g_opt.cml.py
 ```
+
+## 利用者と開発者
+
+入力ファイルを少し直して計算を流すだけなら、Gitを強く意識する必要はありません。`.inp`と`.cml.py`を編集して新しいPipelineを作れば、入力ファイルは`pipeline_input` artifactとしてClearMLに残ります。
+
+Gitが重要になるのは、Agent上で動くtask wrapperを調整する場合です。artifact uploadのcallback、ログのpreview、scratch回収、metrics抽出などを直すときは、そのPythonコードの差分がAgentへ届く必要があります。この用途では、毎回commitするよりも、意図した差分がTaskのsource diffに入っていることを確認する方が大事です。新規ファイルは`git add`してから投入してください。
 
 ## 詳細
 

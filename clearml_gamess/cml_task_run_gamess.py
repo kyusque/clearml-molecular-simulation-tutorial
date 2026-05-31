@@ -5,7 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 try:
     from clearml_gamess.run_gamess import (
@@ -165,6 +165,16 @@ def get_optional_artifact_path(task, name: str) -> Path | None:
     return Path(artifact.get_local_copy()).resolve()
 
 
+def workspace_relative_path(path_arg: Path) -> Path:
+    if path_arg.is_absolute() or looks_like_windows_drive_path(path_arg):
+        return Path(PureWindowsPath(str(path_arg)).name)
+    return path_arg
+
+
+def workspace_materialized_path(path_arg: Path, run_workspace: Path) -> Path:
+    return run_workspace / workspace_relative_path(path_arg)
+
+
 def restore_artifact_or_local_path(task, path_arg: Path, artifact_name: str, run_workspace: Path) -> Path:
     local_path = resolve_from_repo(path_arg).resolve()
     if local_path.exists():
@@ -176,7 +186,7 @@ def restore_artifact_or_local_path(task, path_arg: Path, artifact_name: str, run
             f"Required input was not found and {artifact_name} artifact is missing: {local_path.as_posix()}"
         )
 
-    restored_path = run_workspace / path_arg
+    restored_path = workspace_materialized_path(path_arg, run_workspace)
     restored_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(artifact_path, restored_path)
     return restored_path
@@ -200,7 +210,7 @@ def resolve_patch_path(task, patch_arg: Path | None, params: dict[str, str], run
 
 def apply_input_patch(base_input: Path, input_arg: Path, patch_path: Path, run_workspace: Path) -> Path:
     patched_root = run_workspace / "patched_input"
-    relative_input = input_arg if not input_arg.is_absolute() else Path(input_arg.name)
+    relative_input = workspace_relative_path(input_arg)
     staged_input = patched_root / relative_input
     staged_input.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(base_input, staged_input)
@@ -243,7 +253,7 @@ def apply_input_patch(base_input: Path, input_arg: Path, patch_path: Path, run_w
 def resolve_input_path(task, input_arg: Path, input_patch_arg: Path | None, params: dict[str, str], run_workspace: Path) -> Path:
     pipeline_input_artifact = get_optional_artifact_path(task, "pipeline_input")
     if pipeline_input_artifact is not None:
-        input_path = run_workspace / input_arg
+        input_path = workspace_materialized_path(input_arg, run_workspace)
         input_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(pipeline_input_artifact, input_path)
         input_path = input_path.resolve()
